@@ -138,10 +138,10 @@ const DASH_DURATION_FRAMES = 6;    // Short dash duration
 
 // Stamina system
 const STAMINA_MAX = 100;
-const STAMINA_W_DRAIN_PER_FRAME = 0.28; // Hold W drains a little each frame
+const STAMINA_W_DRAIN_PER_FRAME = 0.35; // Hold W drains a little each frame
 const STAMINA_REGEN_PER_FRAME = 0.01;   // Slow baseline regen
 const STAMINA_SHIFT_REGEN_MULTIPLIER = 20;
-const DASH_STAMINA_COST = 20;           // Space costs 20% each dash
+const DASH_STAMINA_COST = 17.50;           // Space costs 20% each dash
 let stamina = STAMINA_MAX;
 
 // Game states
@@ -1266,22 +1266,22 @@ function drawControlsHelp() {
         y += lineHeight;
         ctx.fillText('Shift: Slow + Regen', canvas.width - padding, y);
         y += lineHeight;
-        ctx.fillText('Dash: Evade mud', canvas.width - padding, y);
+        ctx.fillText('Dash: Evade', canvas.width - padding, y);
         y += lineHeight;
         ctx.fillText('Pause: Stop/Resume', canvas.width - padding, y);
         return;
     }
 
     // Desktop controls list
-    ctx.fillText('A/D: Move left / right', canvas.width - padding, y);
+    ctx.fillText('A/D: Move', canvas.width - padding, y);
     y += lineHeight;
-    ctx.fillText('W: Move faster', canvas.width - padding, y);
+    ctx.fillText('W: Boost', canvas.width - padding, y);
     y += lineHeight;
-    ctx.fillText('Shift: Slow down + recover', canvas.width - padding, y);
+    ctx.fillText('Shift: Slow + Regen', canvas.width - padding, y);
     y += lineHeight;
     ctx.fillText('Space: Evade', canvas.width - padding, y);
     y += lineHeight;
-    ctx.fillText('Enter: Pause/Resume', canvas.width - padding, y);
+    ctx.fillText('Enter: Stop/Resume', canvas.width - padding, y);
 }
 
 /**
