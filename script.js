@@ -148,7 +148,7 @@ let gameRunning = true;
 let mouseX = 0;
 let mouseY = 0;
 
-// Keyboard movement state (A/D + W + Shift)
+// Keyboard movement state
 const movementKeys = {
     left: false,
     right: false,
