@@ -49,6 +49,9 @@ dirtBallImage.src = 'img/dirt-ball.png';
 const heartImage = new Image();
 heartImage.src = 'img/heart.png';
 
+const forcefieldImage = new Image();
+forcefieldImage.src = 'img/forcefield.png';
+
 // ========================================
 // BUTTON CONSTANTS
 // ========================================
@@ -163,14 +166,21 @@ let dashFramesLeft = 0;            // Active dash frames remaining
 let dashInvincible = false;        // True only while dash is active
 const DASH_SPEED = 60;             // Burst speed per frame
 const DASH_DURATION_FRAMES = 8;    // Short dash duration
+const FORCEFIELD_DURATION_FRAMES = 600; // 10 seconds at ~60 FPS
+const FORCEFIELD_FLICKER_START_FRAMES = 120; // Start warning flicker in final 2 seconds
+const FORCEFIELD_FLICKER_INTERVAL_FRAMES = 6;
 
 // Stamina system
 const STAMINA_MAX = 100;
 const STAMINA_W_DRAIN_PER_FRAME = 0.35; // Hold W drains a little each frame
 const STAMINA_REGEN_PER_FRAME = 0.01;   // Slow baseline regen
-const STAMINA_SHIFT_REGEN_MULTIPLIER = 20;
+const STAMINA_SHIFT_REGEN_MIN_MULTIPLIER = 2;
+const STAMINA_SHIFT_REGEN_MAX_MULTIPLIER = 50;
+const STAMINA_SHIFT_REGEN_RAMP_FRAMES = 360;
+const STAMINA_SHIFT_REGEN_SPEED_MULTIPLIER = 3;
 const DASH_STAMINA_COST = 17.50;           // Space costs 20% each dash
 let stamina = STAMINA_MAX;
+let shiftRegenHoldFrames = 0;
 
 // Game states
 const STATES = {
@@ -215,7 +225,8 @@ const OBJECT_TYPES = {
     WATER_DROP: 'water-drop',
     GOLD_WATER_DROP: 'gold-water-drop',
     DIRT_BALL: 'dirt-ball',
-    HEART: 'heart'
+    HEART: 'heart',
+    FORCEFIELD: 'forcefield'
 };
 
 // Smaller hitboxes for falling objects (per type)
@@ -223,7 +234,8 @@ const OBJECT_HITBOX_SCALES = {
     'water-drop': 0.5,
     'gold-water-drop': 0.5,
     'dirt-ball': 0.6,
-    'heart': 0.55
+    'heart': 0.55,
+    'forcefield': 0.55
 };
 
 // Object settings
@@ -235,7 +247,8 @@ const OBJECT_SPEEDS = {
     'water-drop': 5,
     'gold-water-drop': 4,
     'dirt-ball': 7,
-    'heart': 3
+    'heart': 3,
+    'forcefield': 3
 };
 
 // Spawn weights (higher = more likely)
@@ -243,7 +256,8 @@ const SPAWN_WEIGHTS = {
     'water-drop': 120,       // More common
     'gold-water-drop': 15,   // Rare
     'dirt-ball': 220,        // Even more common
-    'heart': 5               // Very rare
+    'heart': 5,              // Very rare
+    'forcefield': 5          // Very rare (same as heart)
 };
 
 // Spawn timer
@@ -258,6 +272,7 @@ let playerScale = 1;         // Current player scale (1 = normal)
 let playerScaleTimer = 0;    // Frames left for player scale effect
 let screenShakeTimer = 0;    // Frames left for screen shake effect
 const SCREEN_SHAKE_STRENGTH = 8;
+let forcefieldTimer = 0;     // Frames left for dirt-ball-only invincibility
 
 // ========================================
 // GAME STATE: SCORE AND LIVES
@@ -498,6 +513,7 @@ function updateResponsiveSizes() {
  * - 50 combo = 4x
  */
 function getMultiplier() {
+    if (combo >= 1000) return 100;
     if (combo >= 500) return 50;
     if (combo >= 200) return 20;
     if (combo >= 100) return 10;
@@ -600,10 +616,18 @@ function updatePlaying() {
 function updateStamina() {
     if (movementKeys.boost) {
         stamina -= STAMINA_W_DRAIN_PER_FRAME;
+        shiftRegenHoldFrames = 0;
     } else {
         let regenAmount = STAMINA_REGEN_PER_FRAME;
         if (movementKeys.slow) {
-            regenAmount *= STAMINA_SHIFT_REGEN_MULTIPLIER;
+            shiftRegenHoldFrames++;
+            const progress = Math.min(1, shiftRegenHoldFrames / STAMINA_SHIFT_REGEN_RAMP_FRAMES);
+            const rampedProgress = progress * progress;
+            const multiplier = STAMINA_SHIFT_REGEN_MIN_MULTIPLIER +
+                (STAMINA_SHIFT_REGEN_MAX_MULTIPLIER - STAMINA_SHIFT_REGEN_MIN_MULTIPLIER) * rampedProgress;
+            regenAmount *= multiplier * STAMINA_SHIFT_REGEN_SPEED_MULTIPLIER;
+        } else {
+            shiftRegenHoldFrames = 0;
         }
         stamina += regenAmount;
     }
@@ -683,6 +707,13 @@ function updateVisualEffects() {
     updateFloatingTexts();
     updatePlayerScaleEffect();
     updateScreenShakeEffect();
+    updateForcefieldTimer();
+}
+
+function updateForcefieldTimer() {
+    if (forcefieldTimer > 0) {
+        forcefieldTimer--;
+    }
 }
 
 /**
@@ -778,8 +809,11 @@ function spawnFallingObject() {
         // Pick a random object type based on spawn weights
         const randomType = getWeightedRandomObject();
         
+        // Pick object dimensions (forcefield keeps original image ratio)
+        const dimensions = getSpawnDimensionsForType(randomType);
+
         // Pick a random X position (object centered)
-        const randomX = Math.random() * (canvas.width - OBJECT_SIZE);
+        const randomX = Math.random() * (canvas.width - dimensions.width);
         
         // Get randomized speed for this object (each object has slightly different speed)
         const speed = getRandomizedSpeed(randomType);
@@ -788,9 +822,9 @@ function spawnFallingObject() {
         const newObject = {
             type: randomType,
             x: randomX,
-            y: -OBJECT_SIZE, // Start above the screen
-            width: OBJECT_SIZE,
-            height: OBJECT_SIZE,
+            y: -dimensions.height, // Start above the screen
+            width: dimensions.width,
+            height: dimensions.height,
             speed: speed
         };
         
@@ -800,13 +834,47 @@ function spawnFallingObject() {
 }
 
 /**
+ * Get spawn dimensions per object type
+ * Forcefield keeps its natural image aspect ratio within OBJECT_SIZE bounds.
+ */
+function getSpawnDimensionsForType(objectType) {
+    if (objectType === OBJECT_TYPES.FORCEFIELD) {
+        return getAspectFitDimensions(forcefieldImage, OBJECT_SIZE, OBJECT_SIZE);
+    }
+
+    return {
+        width: OBJECT_SIZE,
+        height: OBJECT_SIZE
+    };
+}
+
+/**
+ * Fit an image into max width/height while preserving aspect ratio.
+ */
+function getAspectFitDimensions(image, maxWidth, maxHeight) {
+    const imageWidth = image.naturalWidth || image.width;
+    const imageHeight = image.naturalHeight || image.height;
+
+    if (!imageWidth || !imageHeight) {
+        return { width: maxWidth, height: maxHeight };
+    }
+
+    const scale = Math.min(maxWidth / imageWidth, maxHeight / imageHeight);
+
+    return {
+        width: imageWidth * scale,
+        height: imageHeight * scale
+    };
+}
+
+/**
  * Get a randomized speed for an object type
- * Each object gets a faster random speed range (80% to 220% of base speed)
+ * Each object gets a faster random speed range (70% to 200% of base speed)
  */
 function getRandomizedSpeed(objectType) {
     const baseSpeed = OBJECT_SPEEDS[objectType];
-    const minFactor = 0.8;
-    const maxFactor = 2.2;
+    const minFactor = 0.7;
+    const maxFactor = 2.0;
     
     // Random value between minFactor and maxFactor
     const randomFactor = minFactor + Math.random() * (maxFactor - minFactor);
@@ -921,8 +989,8 @@ function handleCollision(fallingObj) {
             break;
             
         case OBJECT_TYPES.DIRT_BALL:
-            // Ignore harmful effects while dashing (invincible)
-            if (dashInvincible) {
+            // Ignore harmful effects while dashing or forcefield is active
+            if (dashInvincible || forcefieldTimer > 0) {
                 combo += 2;
                 addFloatingText('INVINCIBLE', centerX, centerY, '#ffffff');
                 break;
@@ -952,6 +1020,12 @@ function handleCollision(fallingObj) {
             }
             combo++;
             break;
+
+        case OBJECT_TYPES.FORCEFIELD:
+            forcefieldTimer = FORCEFIELD_DURATION_FRAMES;
+            combo++;
+            addFloatingText('FORCEFIELD!', centerX, centerY, '#6a5acd');
+            break;
     }
 }
 
@@ -977,7 +1051,6 @@ function handleGroundHit(fallingObj) {
 
         case OBJECT_TYPES.GOLD_WATER_DROP:
             // Missing gold water should not cost a life
-            combo = 0;
             break;
             
         case OBJECT_TYPES.DIRT_BALL:
@@ -985,6 +1058,10 @@ function handleGroundHit(fallingObj) {
             break;
             
         case OBJECT_TYPES.HEART:
+            // Just remove it
+            break;
+
+        case OBJECT_TYPES.FORCEFIELD:
             // Just remove it
             break;
     }
@@ -1131,6 +1208,12 @@ function isPointInsideButton(x, y, button) {
  * Draw the player on screen
  */
 function drawPlayer() {
+    const forcefieldActive = forcefieldTimer > 0;
+
+    if (forcefieldActive) {
+        drawPlayerForcefieldOverlay();
+    }
+
     const drawWidth = player.width * playerScale;
     const drawHeight = player.height * playerScale;
     const drawX = player.x - (drawWidth - player.width) / 2;
@@ -1138,6 +1221,13 @@ function drawPlayer() {
 
     // Make player semi-transparent while dashing
     ctx.globalAlpha = dashInvincible ? 0.62 : 1;
+
+    // Add blue tint/glow while forcefield is active
+    if (forcefieldActive) {
+        ctx.filter = 'hue-rotate(165deg) saturate(1.65) brightness(1.08)';
+        ctx.shadowColor = 'rgba(106, 90, 205, 0.85)';
+        ctx.shadowBlur = 18;
+    }
 
     // Draw the jerry can image
     ctx.drawImage(
@@ -1148,7 +1238,39 @@ function drawPlayer() {
         drawHeight
     );
 
-    // Reset alpha for other draw calls
+    // Reset draw state for other draw calls
+    ctx.globalAlpha = 1;
+    ctx.filter = 'none';
+    ctx.shadowColor = 'transparent';
+    ctx.shadowBlur = 0;
+}
+
+/**
+ * Draw active forcefield effect around player using the same forcefield image.
+ */
+function drawPlayerForcefieldOverlay() {
+    const overlayBoxWidth = player.width * 1.9;
+    const overlayBoxHeight = player.height * 1.9;
+    const overlaySize = getAspectFitDimensions(forcefieldImage, overlayBoxWidth, overlayBoxHeight);
+    const overlayX = player.x + (player.width - overlaySize.width) / 2;
+    const overlayY = player.y + (player.height - overlaySize.height) / 2;
+
+    let overlayAlpha = 0.75;
+
+    // Flicker transparency when forcefield is close to ending
+    if (forcefieldTimer <= FORCEFIELD_FLICKER_START_FRAMES) {
+        const flickerPhase = Math.floor(forcefieldTimer / FORCEFIELD_FLICKER_INTERVAL_FRAMES) % 2;
+        overlayAlpha = flickerPhase === 0 ? 0.15 : 0.75;
+    }
+
+    ctx.globalAlpha = overlayAlpha;
+    ctx.drawImage(
+        forcefieldImage,
+        overlayX,
+        overlayY,
+        overlaySize.width,
+        overlaySize.height
+    );
     ctx.globalAlpha = 1;
 }
 
@@ -1186,6 +1308,8 @@ function getObjectImage(objectType) {
             return dirtBallImage;
         case OBJECT_TYPES.HEART:
             return heartImage;
+        case OBJECT_TYPES.FORCEFIELD:
+            return forcefieldImage;
         default:
             return waterDropImage; // Fallback
     }
@@ -1249,6 +1373,14 @@ function drawUI() {
     // Draw current goal
     ctx.fillStyle = '#000';
     ctx.fillText(`Goal: ${currentGoal} L`, canvas.width - padding, yPos);
+    yPos += lineHeight;
+
+    // Draw forcefield status
+    if (forcefieldTimer > 0) {
+        const secondsLeft = (forcefieldTimer / 60).toFixed(1);
+        ctx.fillStyle = '#6a5acd';
+        ctx.fillText(`Forcefield: ${secondsLeft}s`, canvas.width - padding, yPos);
+    }
 }
 
 /**
@@ -1599,6 +1731,7 @@ function resetGameToStart() {
     playerScale = 1;
     playerScaleTimer = 0;
     screenShakeTimer = 0;
+    forcefieldTimer = 0;
 
     // Reset movement key state
     movementKeys.left = false;
@@ -1609,6 +1742,7 @@ function resetGameToStart() {
     speedPriorityCounter = 0;
     boostPriorityOrder = 0;
     slowPriorityOrder = 0;
+    shiftRegenHoldFrames = 0;
     dashDirection = 0;
     dashFramesLeft = 0;
     dashInvincible = false;
@@ -1676,6 +1810,7 @@ function initializeGame() {
     playerScale = 1;
     playerScaleTimer = 0;
     screenShakeTimer = 0;
+    forcefieldTimer = 0;
 
     // Reset movement key state
     movementKeys.left = false;
@@ -1686,6 +1821,7 @@ function initializeGame() {
     speedPriorityCounter = 0;
     boostPriorityOrder = 0;
     slowPriorityOrder = 0;
+    shiftRegenHoldFrames = 0;
     dashDirection = 0;
     dashFramesLeft = 0;
     dashInvincible = false;
