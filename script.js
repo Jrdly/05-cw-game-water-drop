@@ -95,6 +95,20 @@ const PAUSE_RESET_BUTTON = {
     }
 };
 
+const PAUSE_HOME_BUTTON = {
+    width: 220,
+    height: 64,
+    color: '#FFD700',
+    hoverColor: '#FFC700',
+    textColor: '#000',
+    get x() {
+        return canvas.width / 2 - this.width / 2;
+    },
+    get y() {
+        return canvas.height / 2 + 120;
+    }
+};
+
 const PAUSE_RESUME_BUTTON = {
     width: 220,
     height: 64,
@@ -106,6 +120,20 @@ const PAUSE_RESUME_BUTTON = {
     },
     get y() {
         return canvas.height / 2 - 40;
+    }
+};
+
+const GAMEOVER_HOME_BUTTON = {
+    width: 260,
+    height: 70,
+    color: '#FFD700',
+    hoverColor: '#FFC700',
+    textColor: '#000',
+    get x() {
+        return canvas.width / 2 - this.width / 2;
+    },
+    get y() {
+        return canvas.height / 2 + 210;
     }
 };
 
@@ -133,8 +161,8 @@ let lastMoveDirection = 'right';   // Tracks last A/D direction pressed
 let dashDirection = 0;             // -1 = left, 1 = right
 let dashFramesLeft = 0;            // Active dash frames remaining
 let dashInvincible = false;        // True only while dash is active
-const DASH_SPEED = 48;             // Burst speed per frame
-const DASH_DURATION_FRAMES = 6;    // Short dash duration
+const DASH_SPEED = 60;             // Burst speed per frame
+const DASH_DURATION_FRAMES = 8;    // Short dash duration
 
 // Stamina system
 const STAMINA_MAX = 100;
@@ -241,7 +269,7 @@ let combo = 0;        // Current combo counter
 let currentGoal = 1000; // Current level goal in liters
 
 const GOAL_START = 1000;
-const GOAL_STEP = 500;
+const GOAL_MULTIPLIER = 1.5;
 
 // ========================================
 // MOBILE TOUCH CONTROLS
@@ -470,7 +498,10 @@ function updateResponsiveSizes() {
  * - 50 combo = 4x
  */
 function getMultiplier() {
-    if (combo >= 50) return 4;
+    if (combo >= 500) return 50;
+    if (combo >= 200) return 20;
+    if (combo >= 100) return 10;
+    if (combo >= 50) return 5;
     if (combo >= 25) return 3;
     if (combo >= 10) return 2;
     return 1; // Default multiplier
@@ -586,7 +617,7 @@ function updateStamina() {
  */
 function updateGoalProgress() {
     while (score >= currentGoal) {
-        currentGoal += GOAL_STEP;
+        currentGoal = Math.floor(currentGoal * GOAL_MULTIPLIER);
     }
 }
 
@@ -884,7 +915,7 @@ function handleCollision(fallingObj) {
             
         case OBJECT_TYPES.GOLD_WATER_DROP:
             score += 50 * multiplier;
-            combo++;
+            combo += 3;
             addFloatingText(`+${50 * multiplier}`, centerX, centerY, '#d4a017');
             triggerPlayerCatchEffect();
             break;
@@ -892,6 +923,7 @@ function handleCollision(fallingObj) {
         case OBJECT_TYPES.DIRT_BALL:
             // Ignore harmful effects while dashing (invincible)
             if (dashInvincible) {
+                combo += 2;
                 addFloatingText('INVINCIBLE', centerX, centerY, '#ffffff');
                 break;
             }
@@ -927,10 +959,24 @@ function handleCollision(fallingObj) {
  * Handle falling object hitting the ground
  */
 function handleGroundHit(fallingObj) {
+    const centerX = fallingObj.x + fallingObj.width / 2;
+    const centerY = fallingObj.y + fallingObj.height / 2;
+
     switch (fallingObj.type) {
         case OBJECT_TYPES.WATER_DROP:
+            // Missing a regular water drop costs one life
+            lives--;
+            combo = 0;
+            addFloatingText('-1 LIFE', centerX, centerY, '#8b0000');
+            triggerMudHitEffect();
+
+            if (lives <= 0) {
+                gameState = STATES.GAMEOVER;
+            }
+            break;
+
         case OBJECT_TYPES.GOLD_WATER_DROP:
-            // Reset combo when water hits ground
+            // Missing gold water should not cost a life
             combo = 0;
             break;
             
@@ -1013,6 +1059,7 @@ function drawPauseOverlay() {
 
     drawButton(PAUSE_RESUME_BUTTON, 'RESUME');
     drawButton(PAUSE_RESET_BUTTON, 'RESET');
+    drawButton(PAUSE_HOME_BUTTON, 'HOME');
 }
 
 /**
@@ -1359,6 +1406,7 @@ function drawGameOver() {
 
     // Draw Play Again button
     drawButton(PLAY_AGAIN_BUTTON, 'PLAY AGAIN');
+    drawButton(GAMEOVER_HOME_BUTTON, 'HOME');
 }
 
 // ========================================
@@ -1434,11 +1482,15 @@ document.addEventListener('click', (event) => {
         gameState = STATES.COUNTDOWN;
         countdown = 3;
     } else if (gameState === STATES.GAMEOVER && isPointInsideButton(clickX, clickY, PLAY_AGAIN_BUTTON)) {
+        restartGameFromPause();
+    } else if (gameState === STATES.GAMEOVER && isPointInsideButton(clickX, clickY, GAMEOVER_HOME_BUTTON)) {
         resetGameToStart();
     } else if (!gameRunning && gameState === STATES.PLAYING && isPointInsideButton(clickX, clickY, PAUSE_RESUME_BUTTON)) {
         gameRunning = true;
     } else if (!gameRunning && gameState === STATES.PLAYING && isPointInsideButton(clickX, clickY, PAUSE_RESET_BUTTON)) {
-        resetGameToStart();
+        restartGameFromPause();
+    } else if (!gameRunning && gameState === STATES.PLAYING && isPointInsideButton(clickX, clickY, PAUSE_HOME_BUTTON)) {
+        returnToHomeFromPause();
     }
 });
 
@@ -1457,11 +1509,15 @@ document.addEventListener('touchend', (event) => {
         gameState = STATES.COUNTDOWN;
         countdown = 3;
     } else if (gameState === STATES.GAMEOVER && isPointInsideButton(touchX, touchY, PLAY_AGAIN_BUTTON)) {
+        restartGameFromPause();
+    } else if (gameState === STATES.GAMEOVER && isPointInsideButton(touchX, touchY, GAMEOVER_HOME_BUTTON)) {
         resetGameToStart();
     } else if (!gameRunning && gameState === STATES.PLAYING && isPointInsideButton(touchX, touchY, PAUSE_RESUME_BUTTON)) {
         gameRunning = true;
     } else if (!gameRunning && gameState === STATES.PLAYING && isPointInsideButton(touchX, touchY, PAUSE_RESET_BUTTON)) {
-        resetGameToStart();
+        restartGameFromPause();
+    } else if (!gameRunning && gameState === STATES.PLAYING && isPointInsideButton(touchX, touchY, PAUSE_HOME_BUTTON)) {
+        returnToHomeFromPause();
     }
 });
 
@@ -1559,6 +1615,25 @@ function resetGameToStart() {
     lastMoveDirection = 'right';
 
     gameState = STATES.START;
+}
+
+/**
+ * Restart gameplay from pause without returning to home screen
+ */
+function restartGameFromPause() {
+    resetGameToStart();
+    gameRunning = true;
+    countdownTimer = 0;
+    countdown = 3;
+    gameState = STATES.COUNTDOWN;
+}
+
+/**
+ * Return to start screen from pause
+ */
+function returnToHomeFromPause() {
+    resetGameToStart();
+    gameRunning = true;
 }
 
 /**
