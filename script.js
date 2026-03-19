@@ -28,6 +28,20 @@ resizeCanvas();
 
 const BACKGROUND_COLOR = '#87ceeb'; // Sky blue
 
+const VISUAL_THEME = {
+    skyTop: '#8ED8F8',
+    skyBottom: '#E7F6FF',
+    horizon: '#C8EBFF',
+    panelFill: 'rgba(255, 255, 255, 0.78)',
+    panelStroke: 'rgba(0, 0, 0, 0.15)',
+    panelShadow: 'rgba(0, 0, 0, 0.18)',
+    textPrimary: '#0D2333',
+    textMuted: '#28465D',
+    accent: '#F9A825',
+    danger: '#B22222',
+    success: '#2E8B57'
+};
+
 // ========================================
 // IMAGE LOADING
 // ========================================
@@ -166,7 +180,7 @@ let dashFramesLeft = 0;            // Active dash frames remaining
 let dashInvincible = false;        // True only while dash is active
 const DASH_SPEED = 60;             // Burst speed per frame
 const DASH_DURATION_FRAMES = 8;    // Short dash duration
-const FORCEFIELD_DURATION_FRAMES = 600; // 10 seconds at ~60 FPS
+const FORCEFIELD_DURATION_FRAMES = 900; // 15 seconds at ~60 FPS
 const FORCEFIELD_FLICKER_START_FRAMES = 120; // Start warning flicker in final 2 seconds
 const FORCEFIELD_FLICKER_INTERVAL_FRAMES = 6;
 
@@ -248,16 +262,16 @@ const OBJECT_SPEEDS = {
     'gold-water-drop': 4,
     'dirt-ball': 7,
     'heart': 3,
-    'forcefield': 3
+    'forcefield': 3.5
 };
 
 // Spawn weights (higher = more likely)
 const SPAWN_WEIGHTS = {
-    'water-drop': 120,       // More common
-    'gold-water-drop': 15,   // Rare
-    'dirt-ball': 220,        // Even more common
+    'water-drop': 150,       // More common
+    'gold-water-drop': 25,   // Rare
+    'dirt-ball': 300,        // Even more common
     'heart': 5,              // Very rare
-    'forcefield': 5          // Very rare (same as heart)
+    'forcefield': 10          // Very rare (same as heart)
 };
 
 // Spawn timer
@@ -419,6 +433,14 @@ function clearTouchControlStates() {
     movementKeys.boost = false;
     movementKeys.slow = false;
     touchAssignments.clear();
+}
+
+function clearKeyboardMovementStates() {
+    movementKeys.left = false;
+    movementKeys.right = false;
+    movementKeys.boost = false;
+    movementKeys.slow = false;
+    shiftRegenHoldFrames = 0;
 }
 
 function handleCanvasTouchStart(event) {
@@ -992,7 +1014,7 @@ function handleCollision(fallingObj) {
             // Ignore harmful effects while dashing or forcefield is active
             if (dashInvincible || forcefieldTimer > 0) {
                 combo += 2;
-                addFloatingText('INVINCIBLE', centerX, centerY, '#ffffff');
+                addFloatingText('INVINCIBLE', centerX, centerY, VISUAL_THEME.textPrimary);
                 break;
             }
 
@@ -1087,9 +1109,8 @@ function draw() {
     // Reset transform before drawing each frame
     ctx.setTransform(1, 0, 0, 1, 0, 0);
 
-    // Clear the canvas with background color
-    ctx.fillStyle = BACKGROUND_COLOR;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    // Draw layered background scene
+    drawBackgroundScene();
 
     // Apply camera shake only during gameplay
     const shakeOffset = gameState === STATES.PLAYING
@@ -1122,14 +1143,89 @@ function draw() {
     ctx.restore();
 }
 
+function drawRoundedRectPath(x, y, width, height, radius) {
+    const clampedRadius = Math.max(0, Math.min(radius, Math.min(width, height) / 2));
+    ctx.beginPath();
+    ctx.moveTo(x + clampedRadius, y);
+    ctx.lineTo(x + width - clampedRadius, y);
+    ctx.quadraticCurveTo(x + width, y, x + width, y + clampedRadius);
+    ctx.lineTo(x + width, y + height - clampedRadius);
+    ctx.quadraticCurveTo(x + width, y + height, x + width - clampedRadius, y + height);
+    ctx.lineTo(x + clampedRadius, y + height);
+    ctx.quadraticCurveTo(x, y + height, x, y + height - clampedRadius);
+    ctx.lineTo(x, y + clampedRadius);
+    ctx.quadraticCurveTo(x, y, x + clampedRadius, y);
+    ctx.closePath();
+}
+
+function drawPanel(x, y, width, height, radius = 14) {
+    ctx.save();
+    ctx.shadowColor = VISUAL_THEME.panelShadow;
+    ctx.shadowBlur = 14;
+    ctx.shadowOffsetY = 4;
+    drawRoundedRectPath(x, y, width, height, radius);
+    ctx.fillStyle = VISUAL_THEME.panelFill;
+    ctx.fill();
+    ctx.restore();
+
+    drawRoundedRectPath(x, y, width, height, radius);
+    ctx.strokeStyle = VISUAL_THEME.panelStroke;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+}
+
+function drawCloud(x, y, scale = 1, alpha = 0.22) {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = '#FFFFFF';
+    ctx.beginPath();
+    ctx.arc(x, y, 26 * scale, 0, Math.PI * 2);
+    ctx.arc(x + 28 * scale, y - 10 * scale, 22 * scale, 0, Math.PI * 2);
+    ctx.arc(x + 54 * scale, y + 2 * scale, 28 * scale, 0, Math.PI * 2);
+    ctx.arc(x + 22 * scale, y + 16 * scale, 24 * scale, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+}
+
+function drawBackgroundScene() {
+    const skyGradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    skyGradient.addColorStop(0, VISUAL_THEME.skyTop);
+    skyGradient.addColorStop(0.62, VISUAL_THEME.horizon);
+    skyGradient.addColorStop(1, VISUAL_THEME.skyBottom);
+    ctx.fillStyle = skyGradient;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Soft horizon strip near the bottom
+    const horizonHeight = Math.max(58, canvas.height * 0.11);
+    const horizonY = canvas.height - horizonHeight;
+    const horizonGradient = ctx.createLinearGradient(0, horizonY, 0, canvas.height);
+    horizonGradient.addColorStop(0, 'rgba(255, 255, 255, 0.22)');
+    horizonGradient.addColorStop(1, 'rgba(255, 255, 255, 0.42)');
+    ctx.fillStyle = horizonGradient;
+    ctx.fillRect(0, horizonY, canvas.width, horizonHeight);
+
+    // Subtle clouds for depth
+    const cloudY = Math.max(55, canvas.height * 0.14);
+    drawCloud(canvas.width * 0.08, cloudY, 1.1, 0.2);
+    drawCloud(canvas.width * 0.34, cloudY + 18, 0.9, 0.16);
+    drawCloud(canvas.width * 0.62, cloudY - 6, 1.25, 0.18);
+    drawCloud(canvas.width * 0.84, cloudY + 16, 0.95, 0.14);
+}
+
 /**
  * Draw pause overlay with reset option
  */
 function drawPauseOverlay() {
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+    ctx.fillStyle = 'rgba(13, 35, 51, 0.46)';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    ctx.fillStyle = '#fff';
+    const panelWidth = Math.min(560, canvas.width * 0.82);
+    const panelHeight = Math.min(420, canvas.height * 0.65);
+    const panelX = canvas.width / 2 - panelWidth / 2;
+    const panelY = canvas.height / 2 - panelHeight / 2;
+    drawPanel(panelX, panelY, panelWidth, panelHeight, 18);
+
+    ctx.fillStyle = VISUAL_THEME.textPrimary;
     ctx.textAlign = 'center';
     ctx.font = 'bold 56px Arial';
     ctx.fillText('PAUSED', canvas.width / 2, canvas.height / 2 - 120);
@@ -1143,15 +1239,25 @@ function drawPauseOverlay() {
  * START state: Show welcome/instructions screen
  */
 function drawStart() {
+    const panelWidth = Math.min(640, canvas.width * 0.88);
+    const panelHeight = Math.min(360, canvas.height * 0.6);
+    const panelX = canvas.width / 2 - panelWidth / 2;
+    const panelY = Math.max(36, canvas.height * 0.16);
+    drawPanel(panelX, panelY, panelWidth, panelHeight, 18);
+
     // Draw title
-    ctx.fillStyle = '#000';
-    ctx.font = isMobileDevice ? 'bold 34px Arial' : 'bold 40px Arial';
+    ctx.fillStyle = VISUAL_THEME.textPrimary;
+    ctx.font = isMobileDevice ? 'bold 38px Arial' : 'bold 48px Arial';
     ctx.textAlign = 'center';
-    ctx.fillText('Water Drop Game', canvas.width / 2, isMobileDevice ? 88 : 100);
+    ctx.fillText('Water Drop Game', canvas.width / 2, panelY + (isMobileDevice ? 78 : 96));
+
+    ctx.fillStyle = VISUAL_THEME.textMuted;
+    ctx.font = isMobileDevice ? '18px Arial' : '22px Arial';
+    ctx.fillText('Catch clean water. Avoid dirt. Save more lives.', canvas.width / 2, panelY + (isMobileDevice ? 120 : 146));
 
     if (isMobileDevice) {
-        ctx.font = '20px Arial';
-        ctx.fillText('Tap START, then use on-screen controls', canvas.width / 2, 132);
+        ctx.font = '18px Arial';
+        ctx.fillText('Tap START, then use on-screen controls', canvas.width / 2, panelY + 164);
     }
 
     // Draw Start button
@@ -1164,27 +1270,32 @@ function drawStart() {
 function drawButton(button, label) {
     // Determine button color (darker if mouse is over it)
     const isHovering = isMouseOverButton(button);
-    ctx.fillStyle = isHovering ? button.hoverColor : button.color;
+    const yOffset = isHovering ? -1 : 0;
+    const gradient = ctx.createLinearGradient(0, button.y + yOffset, 0, button.y + button.height + yOffset);
+    gradient.addColorStop(0, isHovering ? '#FFE182' : '#FFE792');
+    gradient.addColorStop(1, isHovering ? button.hoverColor : button.color);
 
-    // Draw button rectangle with rounded corners
-    ctx.beginPath();
-    ctx.moveTo(button.x + 10, button.y);
-    ctx.lineTo(button.x + button.width - 10, button.y);
-    ctx.quadraticCurveTo(button.x + button.width, button.y, button.x + button.width, button.y + 10);
-    ctx.lineTo(button.x + button.width, button.y + button.height - 10);
-    ctx.quadraticCurveTo(button.x + button.width, button.y + button.height, button.x + button.width - 10, button.y + button.height);
-    ctx.lineTo(button.x + 10, button.y + button.height);
-    ctx.quadraticCurveTo(button.x, button.y + button.height, button.x, button.y + button.height - 10);
-    ctx.lineTo(button.x, button.y + 10);
-    ctx.quadraticCurveTo(button.x, button.y, button.x + 10, button.y);
+    // Draw button with depth
+    ctx.save();
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.28)';
+    ctx.shadowBlur = 10;
+    ctx.shadowOffsetY = 4;
+    drawRoundedRectPath(button.x, button.y + yOffset, button.width, button.height, 14);
+    ctx.fillStyle = gradient;
     ctx.fill();
+    ctx.restore();
+
+    drawRoundedRectPath(button.x, button.y + yOffset, button.width, button.height, 14);
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.22)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
 
     // Draw button text
     ctx.fillStyle = button.textColor;
     ctx.font = 'bold 30px Arial';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(label, button.x + button.width / 2, button.y + button.height / 2);
+    ctx.fillText(label, button.x + button.width / 2, button.y + button.height / 2 + yOffset);
 }
 
 /**
@@ -1337,49 +1448,91 @@ function drawFallingObjects() {
 /**
  * Draw game UI (score, lives, combo, multiplier)
  */
-function drawUI() {
+function getStatsPanelLayout() {
     const padding = 20;
-    const lineHeight = isMobileDevice ? 29 : 35;
-    const fontSize = isMobileDevice ? 20 : 24;
-    let yPos = padding + lineHeight;
-    
-    // Get current multiplier
+    const panelWidth = isMobileDevice ? 246 : 320;
+    const rowHeight = isMobileDevice ? 27 : 32;
+    const headerHeight = isMobileDevice ? 32 : 36;
+    const rowCount = forcefieldTimer > 0 ? 6 : 5;
+    const panelHeight = headerHeight + rowCount * rowHeight + 18;
+    const panelX = canvas.width - padding - panelWidth;
+    const mobileBottomReserve = isMobileDevice ? (MOBILE_CONTROLS.buttonSize + 42) : 0;
+    const panelY = canvas.height - panelHeight - padding - mobileBottomReserve;
+
+    return {
+        padding,
+        panelX,
+        panelY,
+        panelWidth,
+        panelHeight,
+        rowHeight,
+        headerHeight
+    };
+}
+
+function drawUI() {
+    const layout = getStatsPanelLayout();
+    drawPanel(layout.panelX, layout.panelY, layout.panelWidth, layout.panelHeight, 14);
+
     const multiplier = getMultiplier();
-    
-    // Set text styling
-    ctx.fillStyle = '#000';
-    ctx.font = `bold ${fontSize}px Arial`;
-    ctx.textAlign = 'right';
-    
-    // Draw Score (liters)
-    ctx.fillText(`Score: ${score} L`, canvas.width - padding, yPos);
-    yPos += lineHeight;
-    
-    // Draw Lives
-    ctx.fillText(`Lives: ${lives}`, canvas.width - padding, yPos);
-    yPos += lineHeight;
-    
-    // Draw Combo
-    ctx.fillText(`Combo: ${combo}`, canvas.width - padding, yPos);
-    yPos += lineHeight;
-    
-    // Draw Multiplier
-    if (multiplier > 1) {
-        ctx.fillStyle = '#ff6600'; // Orange/gold for multiplier
-    }
-    ctx.fillText(`Multiplier: ${multiplier}x`, canvas.width - padding, yPos);
-    yPos += lineHeight;
 
-    // Draw current goal
-    ctx.fillStyle = '#000';
-    ctx.fillText(`Goal: ${currentGoal} L`, canvas.width - padding, yPos);
-    yPos += lineHeight;
+    const statRows = [
+        { label: 'Score', value: `${score} L`, color: VISUAL_THEME.textPrimary },
+        { label: 'Lives', value: `${lives}`, color: VISUAL_THEME.textPrimary },
+        { label: 'Combo', value: `${combo}`, color: VISUAL_THEME.textPrimary },
+        { label: 'Multiplier', value: `${multiplier}x`, color: multiplier > 1 ? VISUAL_THEME.accent : VISUAL_THEME.textPrimary },
+        { label: 'Goal', value: `${currentGoal} L`, color: VISUAL_THEME.textPrimary }
+    ];
 
-    // Draw forcefield status
     if (forcefieldTimer > 0) {
-        const secondsLeft = (forcefieldTimer / 60).toFixed(1);
-        ctx.fillStyle = '#6a5acd';
-        ctx.fillText(`Forcefield: ${secondsLeft}s`, canvas.width - padding, yPos);
+        statRows.push({
+            label: 'Forcefield',
+            value: `${(forcefieldTimer / 60).toFixed(1)}s`,
+            color: '#6a5acd'
+        });
+    }
+
+    const contentLeft = layout.panelX + 14;
+    const contentRight = layout.panelX + layout.panelWidth - 14;
+
+    // Header
+    ctx.fillStyle = VISUAL_THEME.textPrimary;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.font = isMobileDevice ? 'bold 19px Arial' : 'bold 22px Arial';
+    ctx.fillText('Session Stats', contentLeft, layout.panelY + layout.headerHeight / 2 + 2);
+
+    // Divider below header
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.14)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(contentLeft, layout.panelY + layout.headerHeight);
+    ctx.lineTo(contentRight, layout.panelY + layout.headerHeight);
+    ctx.stroke();
+
+    // Rows
+    for (let i = 0; i < statRows.length; i++) {
+        const row = statRows[i];
+        const rowCenterY = layout.panelY + layout.headerHeight + layout.rowHeight * i + layout.rowHeight / 2;
+
+        if (i > 0) {
+            const separatorY = layout.panelY + layout.headerHeight + layout.rowHeight * i;
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.08)';
+            ctx.beginPath();
+            ctx.moveTo(contentLeft, separatorY);
+            ctx.lineTo(contentRight, separatorY);
+            ctx.stroke();
+        }
+
+        ctx.fillStyle = VISUAL_THEME.textMuted;
+        ctx.font = isMobileDevice ? 'bold 16px Arial' : 'bold 18px Arial';
+        ctx.textAlign = 'left';
+        ctx.fillText(row.label, contentLeft, rowCenterY);
+
+        ctx.fillStyle = row.color;
+        ctx.font = isMobileDevice ? 'bold 17px Arial' : 'bold 19px Arial';
+        ctx.textAlign = 'right';
+        ctx.fillText(row.value, contentRight, rowCenterY);
     }
 }
 
@@ -1391,10 +1544,20 @@ function drawStaminaBar() {
     const barY = 20;
     const barWidth = isMobileDevice ? 190 : 260;
     const barHeight = isMobileDevice ? 16 : 20;
+    const panelPaddingX = 14;
+    const panelPaddingY = 12;
     const staminaRatio = stamina / STAMINA_MAX;
 
+    drawPanel(
+        barX - panelPaddingX,
+        barY - 30,
+        barWidth + panelPaddingX * 2,
+        barHeight + 30 + panelPaddingY,
+        12
+    );
+
     // Label
-    ctx.fillStyle = '#000';
+    ctx.fillStyle = VISUAL_THEME.textPrimary;
     ctx.font = isMobileDevice ? 'bold 15px Arial' : 'bold 18px Arial';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
@@ -1406,11 +1569,11 @@ function drawStaminaBar() {
 
     // Bar fill
     if (staminaRatio > 0.6) {
-        ctx.fillStyle = '#2e8b57';
+        ctx.fillStyle = VISUAL_THEME.success;
     } else if (staminaRatio > 0.3) {
-        ctx.fillStyle = '#d4a017';
+        ctx.fillStyle = VISUAL_THEME.accent;
     } else {
-        ctx.fillStyle = '#b22222';
+        ctx.fillStyle = VISUAL_THEME.danger;
     }
     ctx.fillRect(barX, barY, barWidth * staminaRatio, barHeight);
 
@@ -1424,43 +1587,41 @@ function drawStaminaBar() {
  * Draw controls help text under the top-right game stats
  */
 function drawControlsHelp() {
-    const padding = 20;
-    const lineHeight = isMobileDevice ? 22 : 26;
-    let y = isMobileDevice ? 190 : 230;
-
-    // Title
-    ctx.fillStyle = '#000';
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'top';
-    ctx.font = isMobileDevice ? 'bold 18px Arial' : 'bold 20px Arial';
-    ctx.fillText('Controls', canvas.width - padding, y);
-    y += lineHeight + 4;
-
-    ctx.font = isMobileDevice ? '15px Arial' : '17px Arial';
-
     if (isMobileDevice) {
-        ctx.fillText('A/D: Move', canvas.width - padding, y);
-        y += lineHeight;
-        ctx.fillText('W: Boost', canvas.width - padding, y);
-        y += lineHeight;
-        ctx.fillText('Shift: Slow + Regen', canvas.width - padding, y);
-        y += lineHeight;
-        ctx.fillText('Dash: Evade', canvas.width - padding, y);
-        y += lineHeight;
-        ctx.fillText('Pause: Stop/Resume', canvas.width - padding, y);
         return;
     }
 
-    // Desktop controls list
-    ctx.fillText('A/D: Move', canvas.width - padding, y);
-    y += lineHeight;
-    ctx.fillText('W: Boost', canvas.width - padding, y);
-    y += lineHeight;
-    ctx.fillText('Shift: Slow + Regen', canvas.width - padding, y);
-    y += lineHeight;
-    ctx.fillText('Space: Evade', canvas.width - padding, y);
-    y += lineHeight;
-    ctx.fillText('Enter: Stop/Resume', canvas.width - padding, y);
+    const padding = 20;
+    const lineHeight = 24;
+    const lineItems = [
+        'A/D: Move',
+        'W: Boost',
+        'Shift: Slow + Regen',
+        'Space: Evade',
+        'Enter: Stop/Resume'
+    ];
+    const lines = 6;
+    const panelWidth = 320;
+    const panelHeight = lines * lineHeight + 36;
+    const panelX = padding;
+    const panelY = canvas.height - panelHeight - padding;
+    let y = panelY + 12;
+    drawPanel(panelX, panelY, panelWidth, panelHeight, 14);
+
+    // Title
+    ctx.fillStyle = VISUAL_THEME.textPrimary;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.font = 'bold 20px Arial';
+    ctx.fillText('Controls', panelX + 14, y);
+    y += lineHeight + 4;
+
+    ctx.font = '17px Arial';
+    ctx.fillStyle = VISUAL_THEME.textMuted;
+    for (let i = 0; i < lineItems.length; i++) {
+        ctx.fillText(lineItems[i], panelX + 14, y);
+        y += lineHeight;
+    }
 }
 
 /**
@@ -1512,13 +1673,19 @@ function drawPlaying() {
  * GAMEOVER state: Show game over screen
  */
 function drawGameOver() {
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)'; // Semi-transparent overlay
+    ctx.fillStyle = 'rgba(13, 35, 51, 0.72)';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const panelWidth = Math.min(780, canvas.width * 0.88);
+    const panelHeight = Math.min(520, canvas.height * 0.8);
+    const panelX = canvas.width / 2 - panelWidth / 2;
+    const panelY = canvas.height / 2 - panelHeight / 2;
+    drawPanel(panelX, panelY, panelWidth, panelHeight, 18);
 
     const helpedPeople = Number((score / 20).toFixed(1));
 
     // Draw game over text
-    ctx.fillStyle = '#FFF';
+    ctx.fillStyle = VISUAL_THEME.textPrimary;
     ctx.font = 'bold 50px Arial';
     ctx.textAlign = 'center';
     ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2 - 140);
@@ -1528,8 +1695,10 @@ function drawGameOver() {
     ctx.fillText(`Final Score: ${score} L`, canvas.width / 2, canvas.height / 2 - 80);
 
     // Draw water impact message
-    ctx.font = '22px Arial';
+    ctx.font = isMobileDevice ? '18px Arial' : '22px Arial';
+    ctx.fillStyle = VISUAL_THEME.textMuted;
     ctx.fillText('In the real world, the average person needs about 20 liters a day.', canvas.width / 2, canvas.height / 2 - 20);
+    ctx.fillStyle = VISUAL_THEME.textPrimary;
     ctx.fillText(`You helped ${helpedPeople} people!`, canvas.width / 2, canvas.height / 2 + 20);
 
     // Draw restart instruction
@@ -1663,18 +1832,22 @@ document.addEventListener('keydown', (event) => {
         event.preventDefault();
         handleSpaceKey();
     } else if (event.code === 'KeyA') {
+        event.preventDefault();
         movementKeys.left = true;
         lastMoveDirection = 'left';
     } else if (event.code === 'KeyD') {
+        event.preventDefault();
         movementKeys.right = true;
         lastMoveDirection = 'right';
     } else if (event.code === 'KeyW') {
+        event.preventDefault();
         movementKeys.boost = true;
         if (!event.repeat) {
             speedPriorityCounter++;
             boostPriorityOrder = speedPriorityCounter;
         }
     } else if (event.code === 'ShiftLeft' || event.code === 'ShiftRight') {
+        event.preventDefault();
         movementKeys.slow = true;
         if (!event.repeat) {
             speedPriorityCounter++;
@@ -1688,13 +1861,29 @@ document.addEventListener('keydown', (event) => {
  */
 document.addEventListener('keyup', (event) => {
     if (event.code === 'KeyA') {
+        event.preventDefault();
         movementKeys.left = false;
     } else if (event.code === 'KeyD') {
+        event.preventDefault();
         movementKeys.right = false;
     } else if (event.code === 'KeyW') {
+        event.preventDefault();
         movementKeys.boost = false;
     } else if (event.code === 'ShiftLeft' || event.code === 'ShiftRight') {
+        event.preventDefault();
         movementKeys.slow = false;
+    }
+});
+
+window.addEventListener('blur', () => {
+    clearKeyboardMovementStates();
+    clearTouchControlStates();
+});
+
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+        clearKeyboardMovementStates();
+        clearTouchControlStates();
     }
 });
 
@@ -1706,6 +1895,7 @@ function handleEnterKey() {
         gameRunning = !gameRunning;
 
         if (!gameRunning) {
+            clearKeyboardMovementStates();
             clearTouchControlStates();
         }
     }
