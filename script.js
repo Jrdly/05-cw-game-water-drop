@@ -6,9 +6,21 @@
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 
+// Mobile detection
+const isMobileDevice = window.matchMedia('(pointer: coarse)').matches || ('ontouchstart' in window);
+
 // Set canvas size to fill most of the screen
-canvas.width = window.innerWidth * 0.9;
-canvas.height = window.innerHeight * 0.9;
+function resizeCanvas() {
+    if (isMobileDevice) {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+    } else {
+        canvas.width = window.innerWidth * 0.9;
+        canvas.height = window.innerHeight * 0.9;
+    }
+}
+
+resizeCanvas();
 
 // ========================================
 // BACKGROUND COLOR
@@ -69,6 +81,34 @@ const PLAY_AGAIN_BUTTON = {
     }
 };
 
+const PAUSE_RESET_BUTTON = {
+    width: 220,
+    height: 64,
+    color: '#FFD700',
+    hoverColor: '#FFC700',
+    textColor: '#000',
+    get x() {
+        return canvas.width / 2 - this.width / 2;
+    },
+    get y() {
+        return canvas.height / 2 + 40;
+    }
+};
+
+const PAUSE_RESUME_BUTTON = {
+    width: 220,
+    height: 64,
+    color: '#FFD700',
+    hoverColor: '#FFC700',
+    textColor: '#000',
+    get x() {
+        return canvas.width / 2 - this.width / 2;
+    },
+    get y() {
+        return canvas.height / 2 - 40;
+    }
+};
+
 // ========================================
 // GAME VARIABLES
 // ========================================
@@ -76,6 +116,33 @@ const PLAY_AGAIN_BUTTON = {
 let gameRunning = true;
 let mouseX = 0;
 let mouseY = 0;
+
+// Keyboard movement state (A/D + W + Shift)
+const movementKeys = {
+    left: false,
+    right: false,
+    boost: false,
+    slow: false
+};
+
+let speedPriorityCounter = 0; // Increments on W/Shift press to track latest input
+let boostPriorityOrder = 0;
+let slowPriorityOrder = 0;
+
+let lastMoveDirection = 'right';   // Tracks last A/D direction pressed
+let dashDirection = 0;             // -1 = left, 1 = right
+let dashFramesLeft = 0;            // Active dash frames remaining
+let dashInvincible = false;        // True only while dash is active
+const DASH_SPEED = 48;             // Burst speed per frame
+const DASH_DURATION_FRAMES = 6;    // Short dash duration
+
+// Stamina system
+const STAMINA_MAX = 100;
+const STAMINA_W_DRAIN_PER_FRAME = 0.28; // Hold W drains a little each frame
+const STAMINA_REGEN_PER_FRAME = 0.01;   // Slow baseline regen
+const STAMINA_SHIFT_REGEN_MULTIPLIER = 20;
+const DASH_STAMINA_COST = 20;           // Space costs 20% each dash
+let stamina = STAMINA_MAX;
 
 // Game states
 const STATES = {
@@ -99,13 +166,12 @@ const player = {
     width: 240,     // Player width (doubled to 240)
     height: 240,    // Player height (doubled to 240)
     hitboxScale: 0.42, // Smaller collision area to match visible can body
-    targetX: 0,     // Target X position (from mouse)
+    speed: 12,      // Horizontal speed per frame for A/D movement
     
     // Initialize player position (call after canvas size is set)
     init: function() {
         this.x = canvas.width / 2 - this.width / 2;  // Start at bottom center
         this.y = canvas.height - this.height - 10;   // Near bottom with 10px margin
-        this.targetX = this.x;
     }
 };
 
@@ -133,7 +199,7 @@ const OBJECT_HITBOX_SCALES = {
 };
 
 // Object settings
-const OBJECT_SIZE = 160; // Size of each falling object (doubled again to 160)
+let OBJECT_SIZE = 160; // Size of each falling object (responsive)
 const SPAWN_INTERVAL = 60; // Frames between spawns (60 frames = ~1 second)
 
 // Speed for each object type (pixels per frame)
@@ -146,9 +212,9 @@ const OBJECT_SPEEDS = {
 
 // Spawn weights (higher = more likely)
 const SPAWN_WEIGHTS = {
-    'water-drop': 60,        // Common
+    'water-drop': 120,       // More common
     'gold-water-drop': 15,   // Rare
-    'dirt-ball': 150,        // Very common (MUCH higher)
+    'dirt-ball': 220,        // Even more common
     'heart': 5               // Very rare
 };
 
@@ -176,6 +242,222 @@ let currentGoal = 1000; // Current level goal in liters
 
 const GOAL_START = 1000;
 const GOAL_STEP = 500;
+
+// ========================================
+// MOBILE TOUCH CONTROLS
+// ========================================
+
+const touchAssignments = new Map(); // touch.identifier -> action name
+
+const MOBILE_CONTROLS = {
+    buttonSize: 68,
+    gap: 12,
+    get left() {
+        const y = canvas.height - this.buttonSize - 18;
+        return { x: 18, y, width: this.buttonSize, height: this.buttonSize, label: 'A' };
+    },
+    get right() {
+        const y = canvas.height - this.buttonSize - 18;
+        return { x: 18 + this.buttonSize + this.gap, y, width: this.buttonSize, height: this.buttonSize, label: 'D' };
+    },
+    get boost() {
+        const y = canvas.height - this.buttonSize - 18;
+        return { x: canvas.width - (this.buttonSize * 4 + this.gap * 3) - 18, y, width: this.buttonSize, height: this.buttonSize, label: 'W' };
+    },
+    get slow() {
+        const y = canvas.height - this.buttonSize - 18;
+        return { x: canvas.width - (this.buttonSize * 3 + this.gap * 2) - 18, y, width: this.buttonSize, height: this.buttonSize, label: 'Shift' };
+    },
+    get dash() {
+        const y = canvas.height - this.buttonSize - 18;
+        return { x: canvas.width - (this.buttonSize * 2 + this.gap) - 18, y, width: this.buttonSize, height: this.buttonSize, label: 'Dash' };
+    },
+    get pause() {
+        const y = canvas.height - this.buttonSize - 18;
+        return { x: canvas.width - this.buttonSize - 18, y, width: this.buttonSize, height: this.buttonSize, label: 'Pause' };
+    }
+};
+
+function getControlEntries() {
+    return [
+        ['left', MOBILE_CONTROLS.left],
+        ['right', MOBILE_CONTROLS.right],
+        ['boost', MOBILE_CONTROLS.boost],
+        ['slow', MOBILE_CONTROLS.slow],
+        ['dash', MOBILE_CONTROLS.dash],
+        ['pause', MOBILE_CONTROLS.pause]
+    ];
+}
+
+function setActionState(action, isPressed) {
+    if (action === 'left') {
+        movementKeys.left = isPressed;
+        if (isPressed) lastMoveDirection = 'left';
+        return;
+    }
+
+    if (action === 'right') {
+        movementKeys.right = isPressed;
+        if (isPressed) lastMoveDirection = 'right';
+        return;
+    }
+
+    if (action === 'boost') {
+        movementKeys.boost = isPressed;
+        if (isPressed) {
+            speedPriorityCounter++;
+            boostPriorityOrder = speedPriorityCounter;
+        }
+        return;
+    }
+
+    if (action === 'slow') {
+        movementKeys.slow = isPressed;
+        if (isPressed) {
+            speedPriorityCounter++;
+            slowPriorityOrder = speedPriorityCounter;
+        }
+        return;
+    }
+
+    if (action === 'dash' && isPressed) {
+        handleSpaceKey();
+        return;
+    }
+
+    if (action === 'pause' && isPressed) {
+        handleEnterKey();
+    }
+}
+
+function getActionAtPoint(x, y) {
+    const entries = getControlEntries();
+    for (let i = 0; i < entries.length; i++) {
+        const [action, button] = entries[i];
+        if (isPointInsideButton(x, y, button)) {
+            return action;
+        }
+    }
+    return null;
+}
+
+function drawMobileControls() {
+    if (!isMobileDevice || gameState !== STATES.PLAYING) {
+        return;
+    }
+
+    const entries = getControlEntries();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    for (let i = 0; i < entries.length; i++) {
+        const [action, button] = entries[i];
+        const active =
+            (action === 'left' && movementKeys.left) ||
+            (action === 'right' && movementKeys.right) ||
+            (action === 'boost' && movementKeys.boost) ||
+            (action === 'slow' && movementKeys.slow);
+
+        ctx.fillStyle = active ? 'rgba(255, 199, 0, 0.92)' : 'rgba(255, 215, 0, 0.82)';
+        ctx.fillRect(button.x, button.y, button.width, button.height);
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.4)';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(button.x, button.y, button.width, button.height);
+
+        ctx.fillStyle = '#000';
+        ctx.font = action === 'slow' ? 'bold 14px Arial' : 'bold 16px Arial';
+        ctx.fillText(button.label, button.x + button.width / 2, button.y + button.height / 2);
+    }
+}
+
+function clearTouchControlStates() {
+    movementKeys.left = false;
+    movementKeys.right = false;
+    movementKeys.boost = false;
+    movementKeys.slow = false;
+    touchAssignments.clear();
+}
+
+function handleCanvasTouchStart(event) {
+    if (!isMobileDevice || gameState !== STATES.PLAYING || !gameRunning) {
+        return;
+    }
+
+    event.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+
+    for (let i = 0; i < event.changedTouches.length; i++) {
+        const touch = event.changedTouches[i];
+        const x = touch.clientX - rect.left;
+        const y = touch.clientY - rect.top;
+        const action = getActionAtPoint(x, y);
+
+        if (action) {
+            touchAssignments.set(touch.identifier, action);
+            setActionState(action, true);
+        }
+    }
+}
+
+function handleCanvasTouchMove(event) {
+    if (!isMobileDevice || gameState !== STATES.PLAYING || !gameRunning) {
+        return;
+    }
+
+    event.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+
+    for (let i = 0; i < event.changedTouches.length; i++) {
+        const touch = event.changedTouches[i];
+        const oldAction = touchAssignments.get(touch.identifier) || null;
+        const x = touch.clientX - rect.left;
+        const y = touch.clientY - rect.top;
+        const newAction = getActionAtPoint(x, y);
+
+        if (oldAction === newAction) {
+            continue;
+        }
+
+        if (oldAction) {
+            setActionState(oldAction, false);
+            touchAssignments.delete(touch.identifier);
+        }
+
+        if (newAction) {
+            touchAssignments.set(touch.identifier, newAction);
+            setActionState(newAction, true);
+        }
+    }
+}
+
+function handleCanvasTouchEnd(event) {
+    if (!isMobileDevice) {
+        return;
+    }
+
+    for (let i = 0; i < event.changedTouches.length; i++) {
+        const touch = event.changedTouches[i];
+        const action = touchAssignments.get(touch.identifier);
+        if (action) {
+            setActionState(action, false);
+            touchAssignments.delete(touch.identifier);
+        }
+    }
+}
+
+function updateResponsiveSizes() {
+    if (isMobileDevice) {
+        player.width = 180;
+        player.height = 180;
+        player.speed = 10;
+        OBJECT_SIZE = 120;
+    } else {
+        player.width = 240;
+        player.height = 240;
+        player.speed = 12;
+        OBJECT_SIZE = 160;
+    }
+}
 
 // ========================================
 // MULTIPLIER SYSTEM
@@ -254,6 +536,9 @@ function updateCountdown() {
  * PLAYING state: Main game logic
  */
 function updatePlaying() {
+    // Update stamina (drain/regen)
+    updateStamina();
+
     // Update player movement
     updatePlayer();
 
@@ -276,6 +561,27 @@ function updatePlaying() {
 }
 
 /**
+ * Update stamina each frame
+ * - Holding W drains stamina a little
+ * - Otherwise stamina regens slowly
+ * - Holding Shift doubles regen speed
+ */
+function updateStamina() {
+    if (movementKeys.boost) {
+        stamina -= STAMINA_W_DRAIN_PER_FRAME;
+    } else {
+        let regenAmount = STAMINA_REGEN_PER_FRAME;
+        if (movementKeys.slow) {
+            regenAmount *= STAMINA_SHIFT_REGEN_MULTIPLIER;
+        }
+        stamina += regenAmount;
+    }
+
+    // Clamp stamina to valid range
+    stamina = Math.max(0, Math.min(STAMINA_MAX, stamina));
+}
+
+/**
  * Update goal progression during gameplay
  */
 function updateGoalProgress() {
@@ -285,15 +591,29 @@ function updateGoalProgress() {
 }
 
 /**
- * Update player position based on mouse movement
- * Player follows mouse horizontally (left/right only)
+ * Update player position based on A/D keyboard input
+ * Player moves horizontally only (left/right)
  */
 function updatePlayer() {
-    // Set target X to current mouse position
-    player.targetX = mouseX - player.width / 2;  // Center player on mouse X
-    
-    // Move player directly to target X (matching mouse speed)
-    player.x = player.targetX;
+    // Dash invincibility is active only while dash frames remain
+    dashInvincible = dashFramesLeft > 0;
+
+    if (dashFramesLeft > 0) {
+        // Apply burst movement while dash is active
+        player.x += dashDirection * DASH_SPEED;
+        dashFramesLeft--;
+    } else {
+        const speedMultiplier = getMovementSpeedMultiplier();
+        const currentSpeed = player.speed * speedMultiplier;
+
+        if (movementKeys.left) {
+            player.x -= currentSpeed;
+        }
+
+        if (movementKeys.right) {
+            player.x += currentSpeed;
+        }
+    }
     
     // Keep player within canvas bounds
     if (player.x < 0) {
@@ -301,6 +621,28 @@ function updatePlayer() {
     } else if (player.x + player.width > canvas.width) {
         player.x = canvas.width - player.width;
     }
+}
+
+/**
+ * Get movement speed multiplier from W/Shift with last-pressed priority
+ * W = 2x speed, Shift = 0.5x speed
+ */
+function getMovementSpeedMultiplier() {
+    const boostActive = movementKeys.boost && stamina > 0;
+
+    if (boostActive && movementKeys.slow) {
+        return boostPriorityOrder > slowPriorityOrder ? 2 : 0.5;
+    }
+
+    if (boostActive) {
+        return 2;
+    }
+
+    if (movementKeys.slow) {
+        return 0.5;
+    }
+
+    return 1;
 }
 
 /**
@@ -548,9 +890,17 @@ function handleCollision(fallingObj) {
             break;
             
         case OBJECT_TYPES.DIRT_BALL:
+            // Ignore harmful effects while dashing (invincible)
+            if (dashInvincible) {
+                addFloatingText('INVINCIBLE', centerX, centerY, '#ffffff');
+                break;
+            }
+
             lives--;
+            score = Math.max(0, score - 100);
             combo = 0; // Reset combo on dirt ball hit
             addFloatingText('-1 LIFE', centerX, centerY, '#8b0000');
+            addFloatingText('-100', centerX, centerY - 30, '#8b0000');
             triggerMudHitEffect();
             
             // Check if game over
@@ -641,7 +991,28 @@ function draw() {
             break;
     }
 
+    // When paused during gameplay, draw pause overlay and reset button
+    if (!gameRunning && gameState === STATES.PLAYING) {
+        drawPauseOverlay();
+    }
+
     ctx.restore();
+}
+
+/**
+ * Draw pause overlay with reset option
+ */
+function drawPauseOverlay() {
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.fillStyle = '#fff';
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 56px Arial';
+    ctx.fillText('PAUSED', canvas.width / 2, canvas.height / 2 - 120);
+
+    drawButton(PAUSE_RESUME_BUTTON, 'RESUME');
+    drawButton(PAUSE_RESET_BUTTON, 'RESET');
 }
 
 /**
@@ -650,9 +1021,14 @@ function draw() {
 function drawStart() {
     // Draw title
     ctx.fillStyle = '#000';
-    ctx.font = 'bold 40px Arial';
+    ctx.font = isMobileDevice ? 'bold 34px Arial' : 'bold 40px Arial';
     ctx.textAlign = 'center';
-    ctx.fillText('Water Drop Game', canvas.width / 2, 100);
+    ctx.fillText('Water Drop Game', canvas.width / 2, isMobileDevice ? 88 : 100);
+
+    if (isMobileDevice) {
+        ctx.font = '20px Arial';
+        ctx.fillText('Tap START, then use on-screen controls', canvas.width / 2, 132);
+    }
 
     // Draw Start button
     drawButton(START_BUTTON, 'START');
@@ -713,6 +1089,9 @@ function drawPlayer() {
     const drawX = player.x - (drawWidth - player.width) / 2;
     const drawY = player.y - (drawHeight - player.height) / 2;
 
+    // Make player semi-transparent while dashing
+    ctx.globalAlpha = dashInvincible ? 0.62 : 1;
+
     // Draw the jerry can image
     ctx.drawImage(
         jerryCanImage,
@@ -721,6 +1100,9 @@ function drawPlayer() {
         drawWidth,
         drawHeight
     );
+
+    // Reset alpha for other draw calls
+    ctx.globalAlpha = 1;
 }
 
 /**
@@ -786,7 +1168,8 @@ function drawFallingObjects() {
  */
 function drawUI() {
     const padding = 20;
-    const lineHeight = 35;
+    const lineHeight = isMobileDevice ? 29 : 35;
+    const fontSize = isMobileDevice ? 20 : 24;
     let yPos = padding + lineHeight;
     
     // Get current multiplier
@@ -794,7 +1177,7 @@ function drawUI() {
     
     // Set text styling
     ctx.fillStyle = '#000';
-    ctx.font = 'bold 24px Arial';
+    ctx.font = `bold ${fontSize}px Arial`;
     ctx.textAlign = 'right';
     
     // Draw Score (liters)
@@ -819,6 +1202,86 @@ function drawUI() {
     // Draw current goal
     ctx.fillStyle = '#000';
     ctx.fillText(`Goal: ${currentGoal} L`, canvas.width - padding, yPos);
+}
+
+/**
+ * Draw stamina bar (top-left)
+ */
+function drawStaminaBar() {
+    const barX = 20;
+    const barY = 20;
+    const barWidth = isMobileDevice ? 190 : 260;
+    const barHeight = isMobileDevice ? 16 : 20;
+    const staminaRatio = stamina / STAMINA_MAX;
+
+    // Label
+    ctx.fillStyle = '#000';
+    ctx.font = isMobileDevice ? 'bold 15px Arial' : 'bold 18px Arial';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText('Stamina', barX, barY - 22);
+
+    // Bar background
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
+    ctx.fillRect(barX, barY, barWidth, barHeight);
+
+    // Bar fill
+    if (staminaRatio > 0.6) {
+        ctx.fillStyle = '#2e8b57';
+    } else if (staminaRatio > 0.3) {
+        ctx.fillStyle = '#d4a017';
+    } else {
+        ctx.fillStyle = '#b22222';
+    }
+    ctx.fillRect(barX, barY, barWidth * staminaRatio, barHeight);
+
+    // Bar outline
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(barX, barY, barWidth, barHeight);
+}
+
+/**
+ * Draw controls help text under the top-right game stats
+ */
+function drawControlsHelp() {
+    const padding = 20;
+    const lineHeight = isMobileDevice ? 22 : 26;
+    let y = isMobileDevice ? 190 : 230;
+
+    // Title
+    ctx.fillStyle = '#000';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'top';
+    ctx.font = isMobileDevice ? 'bold 18px Arial' : 'bold 20px Arial';
+    ctx.fillText('Controls', canvas.width - padding, y);
+    y += lineHeight + 4;
+
+    ctx.font = isMobileDevice ? '15px Arial' : '17px Arial';
+
+    if (isMobileDevice) {
+        ctx.fillText('A/D: Move', canvas.width - padding, y);
+        y += lineHeight;
+        ctx.fillText('W: Boost', canvas.width - padding, y);
+        y += lineHeight;
+        ctx.fillText('Shift: Slow + Regen', canvas.width - padding, y);
+        y += lineHeight;
+        ctx.fillText('Dash: Evade mud', canvas.width - padding, y);
+        y += lineHeight;
+        ctx.fillText('Pause: Stop/Resume', canvas.width - padding, y);
+        return;
+    }
+
+    // Desktop controls list
+    ctx.fillText('A/D: Move left / right', canvas.width - padding, y);
+    y += lineHeight;
+    ctx.fillText('W: Move faster', canvas.width - padding, y);
+    y += lineHeight;
+    ctx.fillText('Shift: Slow down + recover', canvas.width - padding, y);
+    y += lineHeight;
+    ctx.fillText('Space: Evade', canvas.width - padding, y);
+    y += lineHeight;
+    ctx.fillText('Enter: Pause/Resume', canvas.width - padding, y);
 }
 
 /**
@@ -852,6 +1315,15 @@ function drawPlaying() {
 
     // Draw floating score/life text effects
     drawFloatingTexts();
+
+    // Draw stamina bar
+    drawStaminaBar();
+
+    // Draw controls help panel
+    drawControlsHelp();
+
+    // Draw on-screen touch controls for mobile
+    drawMobileControls();
     
     // Draw UI (score, lives, combo)
     drawUI();
@@ -883,7 +1355,7 @@ function drawGameOver() {
 
     // Draw restart instruction
     ctx.font = '20px Arial';
-    ctx.fillText('Press ENTER to restart', canvas.width / 2, canvas.height / 2 + 80);
+    ctx.fillText('Click PLAY AGAIN to restart', canvas.width / 2, canvas.height / 2 + 80);
 
     // Draw Play Again button
     drawButton(PLAY_AGAIN_BUTTON, 'PLAY AGAIN');
@@ -900,8 +1372,10 @@ function drawGameOver() {
 function gameLoop() {
     if (gameRunning) {
         update(); // Update game state
-        draw();   // Redraw everything
     }
+
+    // Always draw so paused overlay and buttons remain interactive
+    draw();
 
     // Request the next frame
     requestAnimationFrame(gameLoop);
@@ -915,8 +1389,11 @@ function gameLoop() {
  * Resize canvas if window size changes
  */
 window.addEventListener('resize', () => {
-    canvas.width = window.innerWidth * 0.9;
-    canvas.height = window.innerHeight * 0.9;
+    resizeCanvas();
+    updateResponsiveSizes();
+    if (player && typeof player.init === 'function') {
+        player.init();
+    }
 });
 
 /**
@@ -938,6 +1415,11 @@ document.addEventListener('touchmove', (event) => {
     mouseY = touch.clientY - rect.top;
 }, { passive: true });
 
+canvas.addEventListener('touchstart', handleCanvasTouchStart, { passive: false });
+canvas.addEventListener('touchmove', handleCanvasTouchMove, { passive: false });
+canvas.addEventListener('touchend', handleCanvasTouchEnd, { passive: false });
+canvas.addEventListener('touchcancel', handleCanvasTouchEnd, { passive: false });
+
 /**
  * Detect mouse clicks on buttons
  */
@@ -952,6 +1434,10 @@ document.addEventListener('click', (event) => {
         gameState = STATES.COUNTDOWN;
         countdown = 3;
     } else if (gameState === STATES.GAMEOVER && isPointInsideButton(clickX, clickY, PLAY_AGAIN_BUTTON)) {
+        resetGameToStart();
+    } else if (!gameRunning && gameState === STATES.PLAYING && isPointInsideButton(clickX, clickY, PAUSE_RESUME_BUTTON)) {
+        gameRunning = true;
+    } else if (!gameRunning && gameState === STATES.PLAYING && isPointInsideButton(clickX, clickY, PAUSE_RESET_BUTTON)) {
         resetGameToStart();
     }
 });
@@ -972,6 +1458,10 @@ document.addEventListener('touchend', (event) => {
         countdown = 3;
     } else if (gameState === STATES.GAMEOVER && isPointInsideButton(touchX, touchY, PLAY_AGAIN_BUTTON)) {
         resetGameToStart();
+    } else if (!gameRunning && gameState === STATES.PLAYING && isPointInsideButton(touchX, touchY, PAUSE_RESUME_BUTTON)) {
+        gameRunning = true;
+    } else if (!gameRunning && gameState === STATES.PLAYING && isPointInsideButton(touchX, touchY, PAUSE_RESET_BUTTON)) {
+        resetGameToStart();
     }
 });
 
@@ -982,20 +1472,54 @@ document.addEventListener('keydown', (event) => {
     if (event.code === 'Enter') {
         handleEnterKey();
     } else if (event.code === 'Space') {
+        event.preventDefault();
         handleSpaceKey();
+    } else if (event.code === 'KeyA') {
+        movementKeys.left = true;
+        lastMoveDirection = 'left';
+    } else if (event.code === 'KeyD') {
+        movementKeys.right = true;
+        lastMoveDirection = 'right';
+    } else if (event.code === 'KeyW') {
+        movementKeys.boost = true;
+        if (!event.repeat) {
+            speedPriorityCounter++;
+            boostPriorityOrder = speedPriorityCounter;
+        }
+    } else if (event.code === 'ShiftLeft' || event.code === 'ShiftRight') {
+        movementKeys.slow = true;
+        if (!event.repeat) {
+            speedPriorityCounter++;
+            slowPriorityOrder = speedPriorityCounter;
+        }
     }
 });
 
 /**
- * ENTER key: Start game or restart after gameover
+ * Track key release for A/D movement
+ */
+document.addEventListener('keyup', (event) => {
+    if (event.code === 'KeyA') {
+        movementKeys.left = false;
+    } else if (event.code === 'KeyD') {
+        movementKeys.right = false;
+    } else if (event.code === 'KeyW') {
+        movementKeys.boost = false;
+    } else if (event.code === 'ShiftLeft' || event.code === 'ShiftRight') {
+        movementKeys.slow = false;
+    }
+});
+
+/**
+ * ENTER key: Pause/resume active gameplay
  */
 function handleEnterKey() {
-    if (gameState === STATES.START) {
-        // Start the countdown
-        gameState = STATES.COUNTDOWN;
-        countdown = 3;
-    } else if (gameState === STATES.GAMEOVER) {
-        resetGameToStart();
+    if (gameState === STATES.PLAYING) {
+        gameRunning = !gameRunning;
+
+        if (!gameRunning) {
+            clearTouchControlStates();
+        }
     }
 }
 
@@ -1012,6 +1536,7 @@ function resetGameToStart() {
     lives = 3;
     combo = 0;
     currentGoal = GOAL_START;
+    stamina = STAMINA_MAX;
 
     // Reset visual effects
     floatingTexts = [];
@@ -1019,15 +1544,34 @@ function resetGameToStart() {
     playerScaleTimer = 0;
     screenShakeTimer = 0;
 
+    // Reset movement key state
+    movementKeys.left = false;
+    movementKeys.right = false;
+    movementKeys.boost = false;
+    movementKeys.slow = false;
+    touchAssignments.clear();
+    speedPriorityCounter = 0;
+    boostPriorityOrder = 0;
+    slowPriorityOrder = 0;
+    dashDirection = 0;
+    dashFramesLeft = 0;
+    dashInvincible = false;
+    lastMoveDirection = 'right';
+
     gameState = STATES.START;
 }
 
 /**
- * SPACE key: Pause/resume during gameplay
+ * SPACE key: Dash in the last held A/D direction
  */
 function handleSpaceKey() {
     if (gameState === STATES.PLAYING) {
-        gameRunning = !gameRunning;
+        // Dash costs stamina
+        if (stamina >= DASH_STAMINA_COST) {
+            stamina -= DASH_STAMINA_COST;
+            dashDirection = lastMoveDirection === 'left' ? -1 : 1;
+            dashFramesLeft = DASH_DURATION_FRAMES;
+        }
     }
 }
 
@@ -1050,17 +1594,34 @@ function initializeGame() {
     lives = 3;
     combo = 0;
     currentGoal = GOAL_START;
+    stamina = STAMINA_MAX;
 
     // Reset visual effects
     floatingTexts = [];
     playerScale = 1;
     playerScaleTimer = 0;
     screenShakeTimer = 0;
+
+    // Reset movement key state
+    movementKeys.left = false;
+    movementKeys.right = false;
+    movementKeys.boost = false;
+    movementKeys.slow = false;
+    touchAssignments.clear();
+    speedPriorityCounter = 0;
+    boostPriorityOrder = 0;
+    slowPriorityOrder = 0;
+    dashDirection = 0;
+    dashFramesLeft = 0;
+    dashInvincible = false;
+    lastMoveDirection = 'right';
 }
 
 // ========================================
 // START THE GAME
 // ========================================
+
+updateResponsiveSizes();
 
 // Kick off the game loop
 gameLoop();

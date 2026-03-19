@@ -13,6 +13,7 @@ body {
     min-height: 100vh;
     background-color: #1a1a1a;
     font-family: Arial, sans-serif;
+    overflow: hidden;
 }
 
 /* Style the canvas */
@@ -21,4 +22,20 @@ body {
     background-color: #87ceeb;
     cursor: auto;
     box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+    touch-action: none;
+}
+
+@media (pointer: coarse) {
+    body {
+        margin: 0;
+        padding: 0;
+        align-items: stretch;
+    }
+
+    #gameCanvas {
+        border: 0;
+        width: 100vw;
+        height: 100vh;
+        box-shadow: none;
+    }
 }
