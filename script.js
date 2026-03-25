@@ -185,10 +185,11 @@ const DIFFICULTY_CONFIG = {
         maxLives: 4,
         spawnIntervalMultiplier: 1.6,
         speedMultiplier: 0.7,
+        speedRollExponent: 0.82,
         objectWeightMultipliers: {
-            'water-drop': 1.2,
+            'water-drop': 1.55,
             'gold-water-drop': 1.35,
-            'dirt-ball': 0.55,
+            'dirt-ball': 0.75,
             'heart': 1.5,
             'forcefield': 1.4
         }
@@ -198,12 +199,13 @@ const DIFFICULTY_CONFIG = {
         maxLives: 3,
         spawnIntervalMultiplier: 1,
         speedMultiplier: 1,
+        speedRollExponent: 0.72,
         dirtLateralSpeedRange: {
             min: 0.45,
             max: 1.15
         },
         objectWeightMultipliers: {
-            'water-drop': 1,
+            'water-drop': 2.35,
             'gold-water-drop': 1,
             'dirt-ball': 1,
             'heart': 1,
@@ -215,8 +217,9 @@ const DIFFICULTY_CONFIG = {
         maxLives: 2,
         spawnIntervalMultiplier: 0.55,
         speedMultiplier: 1.45,
+        speedRollExponent: 0.62,
         objectSpeedMultipliers: {
-            'water-drop': 1.15,
+            'water-drop': 1.25,
             'gold-water-drop': 1.15
         },
         dirtLateralSpeedRange: {
@@ -228,9 +231,9 @@ const DIFFICULTY_CONFIG = {
             max: 1.85
         },
         objectWeightMultipliers: {
-            'water-drop': 0.92,
+            'water-drop': 1.80,
             'gold-water-drop': 0.7,
-            'dirt-ball': 1.55,
+            'dirt-ball': 1.15,
             'heart': 0.6,
             'forcefield': 0.65
         }
@@ -267,7 +270,10 @@ let dashDirection = 0;             // -1 = left, 1 = right
 let dashFramesLeft = 0;            // Active dash frames remaining
 let dashInvincible = false;        // True only while dash is active
 const DASH_SPEED = 60;             // Burst speed per frame
-const DASH_DURATION_FRAMES = 8;    // Short dash duration
+const DASH_W_BOOST_MULTIPLIER = 2.5; // Holding W while dashing doubles dash speed
+const DASH_W_BOOST_STAMINA_MULTIPLIER = 1.5; // Holding W while dashing increases dash stamina cost
+let activeDashSpeed = DASH_SPEED;
+const DASH_DURATION_FRAMES = 10;    // Short dash duration
 const FORCEFIELD_DURATION_FRAMES = 900; // 15 seconds at ~60 FPS
 const FORCEFIELD_FLICKER_START_FRAMES = 120; // Start warning flicker in final 2 seconds
 const FORCEFIELD_FLICKER_INTERVAL_FRAMES = 6;
@@ -276,13 +282,13 @@ const HEART_REGEN_MULTIPLIER = 12;
 
 // Stamina system
 const STAMINA_MAX = 100;
-const STAMINA_W_DRAIN_PER_FRAME = 0.35; // Hold W drains a little each frame
-const STAMINA_REGEN_PER_FRAME = 0.01;   // Slow baseline regen
-const STAMINA_SHIFT_REGEN_MIN_MULTIPLIER = 2;
+const STAMINA_W_DRAIN_PER_FRAME = 0.20; // Hold W drains a little each frame
+const STAMINA_REGEN_PER_FRAME = 0.02;   // Slow baseline regen
+const STAMINA_SHIFT_REGEN_MIN_MULTIPLIER = 3;
 const STAMINA_SHIFT_REGEN_MAX_MULTIPLIER = 50;
 const STAMINA_SHIFT_REGEN_RAMP_FRAMES = 360;
 const STAMINA_SHIFT_REGEN_SPEED_MULTIPLIER = 3;
-const DASH_STAMINA_COST = 17.50;           // Space costs 20% each dash
+const DASH_STAMINA_COST = 12.00;           // Space costs 20% each dash
 let stamina = STAMINA_MAX;
 let shiftRegenHoldFrames = 0;
 
@@ -374,7 +380,7 @@ const SPAWN_WEIGHTS = {
     'forcefield': 10          // Very rare (same as heart)
 };
 
-const HARD_SIDE_DIRT_SPAWN_CHANCE = 0.14;
+const HARD_SIDE_DIRT_SPAWN_CHANCE = 0.05;
 const HARD_SIDE_DIRT_GRAVITY = 0.12;
 
 // Spawn timer
@@ -397,12 +403,22 @@ let heartRegenTimer = 0;     // Frames left for boosted stamina regeneration
 // ========================================
 
 let score = 0;        // Current score (in liters)
-let lives = getMaxLivesForCurrentDifficulty(); // Current lives (difficulty-based max)
+let maxLives = getMaxLivesForCurrentDifficulty();
+let lives = maxLives; // Current lives
 let combo = 0;        // Current combo counter
 let currentGoal = 1000; // Current level goal in liters
 
 const GOAL_START = 1000;
 const GOAL_MULTIPLIER = 1.5;
+const CHALLENGE_DIRT_CLICKS_START = 15;
+const CHALLENGE_DIRT_CLICKS_STEP = 5;
+const CHALLENGE_HARD_SURVIVE_SECONDS_START = 30;
+const CHALLENGE_HARD_SURVIVE_SECONDS_STEP = 15;
+const FRAMES_PER_SECOND = 60;
+
+let challengeType = 'dirt-clicks'; // 'dirt-clicks' | 'hard-survival'
+let challengeProgress = 0; // Clicks for easy/normal, frames survived for hard
+let challengeGoal = CHALLENGE_DIRT_CLICKS_START;
 
 // ========================================
 // MOBILE TOUCH CONTROLS
@@ -758,6 +774,7 @@ function tryPopDirtBallAtPoint(x, y) {
 
         if (isInsideHitbox) {
             combo += 2;
+            registerDirtBallClickChallengeProgress();
             addFloatingText('+2 COMBO', obj.x + obj.width / 2, obj.y + obj.height / 2, VISUAL_THEME.textPrimary);
             fallingObjects.splice(i, 1);
             return true;
@@ -786,6 +803,58 @@ function getMultiplier() {
     if (combo >= 25) return 3;
     if (combo >= 10) return 2;
     return 1; // Default multiplier
+}
+
+function initializeChallengeState() {
+    const isHardDifficulty = selectedDifficulty === DIFFICULTIES.HARD;
+
+    if (isHardDifficulty) {
+        challengeType = 'hard-survival';
+        challengeGoal = CHALLENGE_HARD_SURVIVE_SECONDS_START;
+    } else {
+        challengeType = 'dirt-clicks';
+        challengeGoal = CHALLENGE_DIRT_CLICKS_START;
+    }
+
+    challengeProgress = 0;
+}
+
+function rewardChallengeCompletion() {
+    maxLives++;
+    challengeProgress = 0;
+
+    if (challengeType === 'hard-survival') {
+        challengeGoal += CHALLENGE_HARD_SURVIVE_SECONDS_STEP;
+    } else {
+        challengeGoal += CHALLENGE_DIRT_CLICKS_STEP;
+    }
+
+    addFloatingText('+1 MAX LIFE', player.x + player.width / 2, player.y - 12, VISUAL_THEME.success);
+}
+
+function registerDirtBallClickChallengeProgress() {
+    if (challengeType !== 'dirt-clicks') {
+        return;
+    }
+
+    challengeProgress++;
+
+    if (challengeProgress >= challengeGoal) {
+        rewardChallengeCompletion();
+    }
+}
+
+function updateChallengeProgress() {
+    if (challengeType !== 'hard-survival') {
+        return;
+    }
+
+    challengeProgress++;
+    const goalFrames = challengeGoal * FRAMES_PER_SECOND;
+
+    if (challengeProgress >= goalFrames) {
+        rewardChallengeCompletion();
+    }
 }
 // UPDATE FUNCTION
 // ========================================
@@ -868,6 +937,7 @@ function updatePlaying() {
 
     // Increase goal when current one is reached
     updateGoalProgress();
+    updateChallengeProgress();
     
     // TODO: Add additional game logic here
     // - Check for collisions
@@ -956,7 +1026,7 @@ function updatePlayer() {
 
     if (dashFramesLeft > 0) {
         // Apply burst movement while dash is active
-        player.x += dashDirection * DASH_SPEED;
+        player.x += dashDirection * activeDashSpeed;
         dashFramesLeft--;
     } else {
         const speedMultiplier = getMovementSpeedMultiplier();
@@ -1203,11 +1273,13 @@ function getRandomizedSpeed(objectType) {
     const difficultyConfig = getSelectedDifficultyConfig();
     const difficultySpeedMultiplier =
         difficultyConfig.objectSpeedMultipliers?.[objectType] ?? difficultyConfig.speedMultiplier;
+    const speedRollExponent = difficultyConfig.speedRollExponent ?? 1;
     const minFactor = 0.7;
     const maxFactor = 2.0;
     
-    // Random value between minFactor and maxFactor
-    const randomFactor = minFactor + Math.random() * (maxFactor - minFactor);
+    // Bias roll toward higher values (lower exponent = higher chance of fast falls)
+    const speedRoll = Math.pow(Math.random(), speedRollExponent);
+    const randomFactor = minFactor + speedRoll * (maxFactor - minFactor);
     
     return baseSpeed * randomFactor * difficultySpeedMultiplier;
 }
@@ -1293,7 +1365,7 @@ function updateFallingObjects() {
         
         // Check if object hit the ground
         if (obj.y + obj.height >= canvas.height) {
-            if (obj.type === OBJECT_TYPES.DIRT_BALL && obj.isHardSideDirt && obj.bounceCount < 1) {
+            if (obj.type === OBJECT_TYPES.DIRT_BALL && obj.isHardSideDirt && obj.bounceCount < 2) {
                 obj.y = canvas.height - obj.height;
                 obj.verticalSpeed = -Math.max(3, Math.abs(obj.verticalSpeed) * 0.72);
                 obj.bounceCount++;
@@ -1387,7 +1459,7 @@ function handleCollision(fallingObj) {
             
         case OBJECT_TYPES.HEART:
             // Add life, but max out at current difficulty max
-            if (lives < getMaxLivesForCurrentDifficulty()) {
+            if (lives < maxLives) {
                 lives++;
                 addFloatingText('+1 LIFE', centerX, centerY, '#2e8b57');
             } else {
@@ -1904,7 +1976,7 @@ function getStatsPanelLayout() {
     const panelWidth = isMobileDevice ? 246 : 320;
     const rowHeight = isMobileDevice ? 27 : 32;
     const headerHeight = isMobileDevice ? 32 : 36;
-    const rowCount = forcefieldTimer > 0 ? 6 : 5;
+    const rowCount = forcefieldTimer > 0 ? 7 : 6;
     const panelHeight = headerHeight + rowCount * rowHeight + 18;
     const panelX = canvas.width - padding - panelWidth;
     const mobileBottomReserve = isMobileDevice ? (MOBILE_CONTROLS.buttonSize + 42) : 0;
@@ -1927,12 +1999,21 @@ function drawUI() {
 
     const multiplier = getMultiplier();
 
+    const challengeValue = challengeType === 'hard-survival'
+        ? `${Math.floor(challengeProgress / FRAMES_PER_SECOND)}/${challengeGoal}s`
+        : `${challengeProgress}/${challengeGoal}`;
+
     const statRows = [
         { label: 'Clean Water', value: `${score} L`, color: VISUAL_THEME.textPrimary },
-        { label: 'Lives', value: `${lives}`, color: VISUAL_THEME.textPrimary },
+        { label: 'Lives', value: `${lives}/${maxLives}`, color: VISUAL_THEME.textPrimary },
         { label: 'Momentum', value: `${combo}`, color: VISUAL_THEME.textPrimary },
         { label: 'Impact Boost', value: `${multiplier}x`, color: multiplier > 1 ? VISUAL_THEME.accent : VISUAL_THEME.textPrimary },
-        { label: 'Next Goal', value: `${currentGoal} L`, color: VISUAL_THEME.textPrimary }
+        { label: 'Next Goal', value: `${currentGoal} L`, color: VISUAL_THEME.textPrimary },
+        {
+            label: challengeType === 'hard-survival' ? 'Survival Challenge' : 'Click Challenge',
+            value: challengeValue,
+            color: VISUAL_THEME.textPrimary
+        }
     ];
 
     if (forcefieldTimer > 0) {
@@ -2046,24 +2127,38 @@ function drawControlsHelp(screen = 'start') {
         ? [
             'Touch A/D to move • W to boost',
             'Shift slows and rebuilds stamina',
+            'Hold W + tap Dash for 2x dash speed',
             'Dash into dirt balls OR tap them: +2 combo',
             'Catch water drops, avoid dirt unless comboing',
             'Use Pause to reset or return home'
         ]
         : [
             'A/D move • W boost • Shift slows + regen',
-            'Space dashes • Enter pauses/resumes',
+            'Space dashes • Hold W + Space for 2x dash • Enter pauses/resumes',
             'Dash into dirt balls OR click them: +2 combo',
             'Catch water drops for liters and combo',
             'Avoid dirt balls unless using dash/combo play'
         ];
 
     const panelWidth = isMobileDevice ? Math.min(430, canvas.width - padding * 2) : 430;
-    const panelHeight = 56 + lineItems.length * lineHeight;
+    const textPaddingX = 14;
+    const textMaxWidth = panelWidth - textPaddingX * 2;
+
+    ctx.font = bodyFont;
+    const wrappedLineItems = [];
+    for (let i = 0; i < lineItems.length; i++) {
+        const wrappedLines = getWrappedTextLines(lineItems[i], textMaxWidth);
+        for (let j = 0; j < wrappedLines.length; j++) {
+            wrappedLineItems.push(wrappedLines[j]);
+        }
+    }
+
+    const panelHeight = 56 + wrappedLineItems.length * lineHeight;
     const panelX = padding;
-    const panelY = screen === 'pause'
+    const preferredPanelY = screen === 'pause'
         ? canvas.height - panelHeight - padding
         : Math.min(canvas.height - panelHeight - padding, START_BUTTON.y + START_BUTTON.height + (isMobileDevice ? 10 : 16));
+    const panelY = Math.max(padding, preferredPanelY);
     let y = panelY + 12;
 
     drawPanel(panelX, panelY, panelWidth, panelHeight, 14);
@@ -2077,8 +2172,8 @@ function drawControlsHelp(screen = 'start') {
 
     ctx.font = bodyFont;
     ctx.fillStyle = VISUAL_THEME.textMuted;
-    for (let i = 0; i < lineItems.length; i++) {
-        ctx.fillText(lineItems[i], panelX + 14, y);
+    for (let i = 0; i < wrappedLineItems.length; i++) {
+        ctx.fillText(wrappedLineItems[i], panelX + textPaddingX, y);
         y += lineHeight;
     }
 }
@@ -2392,9 +2487,11 @@ function resetGameToStart() {
 
     // Reset game stats
     score = 0;
-    lives = getMaxLivesForCurrentDifficulty();
+    maxLives = getMaxLivesForCurrentDifficulty();
+    lives = maxLives;
     combo = 0;
     currentGoal = GOAL_START;
+    initializeChallengeState();
     stamina = STAMINA_MAX;
 
     // Reset visual effects
@@ -2448,13 +2545,17 @@ function returnToHomeFromPause() {
 function handleSpaceKey() {
     if (gameState === STATES.PLAYING) {
         const hasForcefield = forcefieldTimer > 0;
+        const dashStaminaCost = movementKeys.boost
+            ? DASH_STAMINA_COST * DASH_W_BOOST_STAMINA_MULTIPLIER
+            : DASH_STAMINA_COST;
 
         // Dash costs stamina
-        if (hasForcefield || stamina >= DASH_STAMINA_COST) {
+        if (hasForcefield || stamina >= dashStaminaCost) {
             if (!hasForcefield) {
-                stamina -= DASH_STAMINA_COST;
+                stamina -= dashStaminaCost;
             }
             dashDirection = lastMoveDirection === 'left' ? -1 : 1;
+            activeDashSpeed = movementKeys.boost ? DASH_SPEED * DASH_W_BOOST_MULTIPLIER : DASH_SPEED;
             dashFramesLeft = DASH_DURATION_FRAMES;
         }
     }
@@ -2476,9 +2577,11 @@ function initializeGame() {
     
     // Reset game stats
     score = 0;
-    lives = getMaxLivesForCurrentDifficulty();
+    maxLives = getMaxLivesForCurrentDifficulty();
+    lives = maxLives;
     combo = 0;
     currentGoal = GOAL_START;
+    initializeChallengeState();
     stamina = STAMINA_MAX;
 
     // Reset visual effects
