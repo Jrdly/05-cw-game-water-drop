@@ -182,6 +182,7 @@ const DIFFICULTIES = {
 const DIFFICULTY_CONFIG = {
     easy: {
         label: 'EASY',
+        maxLives: 4,
         spawnIntervalMultiplier: 1.6,
         speedMultiplier: 0.7,
         objectWeightMultipliers: {
@@ -194,8 +195,13 @@ const DIFFICULTY_CONFIG = {
     },
     medium: {
         label: 'NORMAL',
+        maxLives: 3,
         spawnIntervalMultiplier: 1,
         speedMultiplier: 1,
+        dirtLateralSpeedRange: {
+            min: 0.45,
+            max: 1.15
+        },
         objectWeightMultipliers: {
             'water-drop': 1,
             'gold-water-drop': 1,
@@ -206,11 +212,20 @@ const DIFFICULTY_CONFIG = {
     },
     hard: {
         label: 'HARD',
+        maxLives: 2,
         spawnIntervalMultiplier: 0.55,
         speedMultiplier: 1.45,
         objectSpeedMultipliers: {
             'water-drop': 1.15,
             'gold-water-drop': 1.15
+        },
+        dirtLateralSpeedRange: {
+            min: 1.8,
+            max: 3.4
+        },
+        sideDirtLateralSpeedRange: {
+            min: 1.05,
+            max: 1.85
         },
         objectWeightMultipliers: {
             'water-drop': 0.92,
@@ -230,6 +245,10 @@ let gameRunning = true;
 let mouseX = 0;
 let mouseY = 0;
 let selectedDifficulty = DIFFICULTIES.MEDIUM;
+
+function getMaxLivesForCurrentDifficulty() {
+    return getSelectedDifficultyConfig().maxLives || 3;
+}
 
 // Keyboard movement state
 const movementKeys = {
@@ -355,6 +374,9 @@ const SPAWN_WEIGHTS = {
     'forcefield': 10          // Very rare (same as heart)
 };
 
+const HARD_SIDE_DIRT_SPAWN_CHANCE = 0.14;
+const HARD_SIDE_DIRT_GRAVITY = 0.12;
+
 // Spawn timer
 let spawnTimer = 0;
 
@@ -375,7 +397,7 @@ let heartRegenTimer = 0;     // Frames left for boosted stamina regeneration
 // ========================================
 
 let score = 0;        // Current score (in liters)
-let lives = 3;        // Current lives (max 3)
+let lives = getMaxLivesForCurrentDifficulty(); // Current lives (difficulty-based max)
 let combo = 0;        // Current combo counter
 let currentGoal = 1000; // Current level goal in liters
 
@@ -1107,6 +1129,31 @@ function spawnFallingObject() {
             height: dimensions.height,
             speed: speed
         };
+
+        if (randomType === OBJECT_TYPES.DIRT_BALL) {
+            const dirtSpeedRange = getSelectedDifficultyConfig().dirtLateralSpeedRange;
+            if (dirtSpeedRange && dirtSpeedRange.max > 0) {
+                const minLateralSpeed = dirtSpeedRange.min;
+                const maxLateralSpeed = dirtSpeedRange.max;
+                const lateralMagnitude = minLateralSpeed + Math.random() * (maxLateralSpeed - minLateralSpeed);
+                newObject.lateralSpeed = Math.random() < 0.5 ? -lateralMagnitude : lateralMagnitude;
+            }
+
+            if (selectedDifficulty === DIFFICULTIES.HARD && Math.random() < HARD_SIDE_DIRT_SPAWN_CHANCE) {
+                const hardConfig = getSelectedDifficultyConfig();
+                const sideRange = hardConfig.sideDirtLateralSpeedRange || { min: 1.05, max: 1.85 };
+                const fromLeftSide = Math.random() < 0.5;
+                const sideOffset = newObject.width * 0.34;
+                const sideLateralMagnitude = sideRange.min + Math.random() * (sideRange.max - sideRange.min);
+
+                newObject.isHardSideDirt = true;
+                newObject.bounceCount = 0;
+                newObject.verticalSpeed = speed * (0.52 + Math.random() * 0.22);
+                newObject.lateralSpeed = (fromLeftSide ? 1 : -1) * sideLateralMagnitude;
+                newObject.x = fromLeftSide ? -sideOffset : canvas.width - newObject.width + sideOffset;
+                newObject.y = -newObject.height * (0.62 + Math.random() * 0.26);
+            }
+        }
         
         // Add to array
         fallingObjects.push(newObject);
@@ -1207,8 +1254,34 @@ function updateFallingObjects() {
     for (let i = 0; i < fallingObjects.length; i++) {
         const obj = fallingObjects[i];
         
-        // Move object downward
-        obj.y += obj.speed;
+        // Move object
+        if (obj.type === OBJECT_TYPES.DIRT_BALL && obj.isHardSideDirt) {
+            obj.verticalSpeed += HARD_SIDE_DIRT_GRAVITY;
+            obj.y += obj.verticalSpeed;
+            obj.x += obj.lateralSpeed;
+
+            if (obj.x <= 0) {
+                obj.x = 0;
+                obj.lateralSpeed = Math.abs(obj.lateralSpeed);
+            } else if (obj.x + obj.width >= canvas.width) {
+                obj.x = canvas.width - obj.width;
+                obj.lateralSpeed = -Math.abs(obj.lateralSpeed);
+            }
+        } else {
+            obj.y += obj.speed;
+
+            if (obj.type === OBJECT_TYPES.DIRT_BALL && typeof obj.lateralSpeed === 'number') {
+                obj.x += obj.lateralSpeed;
+
+                if (obj.x <= 0) {
+                    obj.x = 0;
+                    obj.lateralSpeed = Math.abs(obj.lateralSpeed);
+                } else if (obj.x + obj.width >= canvas.width) {
+                    obj.x = canvas.width - obj.width;
+                    obj.lateralSpeed = -Math.abs(obj.lateralSpeed);
+                }
+            }
+        }
         
         // Check collision with player
         if (checkCollision(obj, player)) {
@@ -1220,6 +1293,13 @@ function updateFallingObjects() {
         
         // Check if object hit the ground
         if (obj.y + obj.height >= canvas.height) {
+            if (obj.type === OBJECT_TYPES.DIRT_BALL && obj.isHardSideDirt && obj.bounceCount < 1) {
+                obj.y = canvas.height - obj.height;
+                obj.verticalSpeed = -Math.max(3, Math.abs(obj.verticalSpeed) * 0.72);
+                obj.bounceCount++;
+                continue;
+            }
+
             handleGroundHit(obj);
             fallingObjects.splice(i, 1);
             i--; // Adjust index since we removed an element
@@ -1306,8 +1386,8 @@ function handleCollision(fallingObj) {
             break;
             
         case OBJECT_TYPES.HEART:
-            // Add life, but max out at 3
-            if (lives < 3) {
+            // Add life, but max out at current difficulty max
+            if (lives < getMaxLivesForCurrentDifficulty()) {
                 lives++;
                 addFloatingText('+1 LIFE', centerX, centerY, '#2e8b57');
             } else {
@@ -1791,15 +1871,28 @@ function drawFallingObjects() {
     for (let i = 0; i < fallingObjects.length; i++) {
         const obj = fallingObjects[i];
         const image = getObjectImage(obj.type);
-        
+
         // Draw the object image
-        ctx.drawImage(
-            image,
-            obj.x,
-            obj.y,
-            obj.width,
-            obj.height
-        );
+        if (obj.type === OBJECT_TYPES.DIRT_BALL && obj.isHardSideDirt) {
+            ctx.save();
+            ctx.filter = 'hue-rotate(92deg) saturate(1.8) brightness(1.08)';
+            ctx.drawImage(
+                image,
+                obj.x,
+                obj.y,
+                obj.width,
+                obj.height
+            );
+            ctx.restore();
+        } else {
+            ctx.drawImage(
+                image,
+                obj.x,
+                obj.y,
+                obj.width,
+                obj.height
+            );
+        }
     }
 }
 
@@ -2299,7 +2392,7 @@ function resetGameToStart() {
 
     // Reset game stats
     score = 0;
-    lives = 3;
+    lives = getMaxLivesForCurrentDifficulty();
     combo = 0;
     currentGoal = GOAL_START;
     stamina = STAMINA_MAX;
@@ -2383,7 +2476,7 @@ function initializeGame() {
     
     // Reset game stats
     score = 0;
-    lives = 3;
+    lives = getMaxLivesForCurrentDifficulty();
     combo = 0;
     currentGoal = GOAL_START;
     stamina = STAMINA_MAX;
