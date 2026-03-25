@@ -1,4 +1,8 @@
 /* Reset default browser styles */
+:root {
+    --brand-font: 'Montserrat', 'Avenir Next', 'Segoe UI', sans-serif;
+}
+
 * {
     margin: 0;
     padding: 0;
@@ -12,7 +16,7 @@ body {
     align-items: center;
     min-height: 100vh;
     background: radial-gradient(circle at top, #24455f 0%, #152836 48%, #0f1e2a 100%);
-    font-family: Arial, sans-serif;
+    font-family: var(--brand-font);
     overflow: hidden;
 }
 
@@ -24,6 +28,68 @@ body {
     cursor: auto;
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
     touch-action: none;
+}
+
+.home-footer {
+    position: fixed;
+    left: 50%;
+    bottom: 16px;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.97);
+    border: 2px solid rgba(13, 35, 51, 0.22);
+    box-shadow: 0 10px 26px rgba(0, 0, 0, 0.28);
+    color: #0d2333;
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    z-index: 10;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 160ms ease;
+}
+
+.home-footer.is-visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.home-footer__label {
+    color: #28465d;
+    font-weight: 800;
+}
+
+.home-footer a {
+    color: #0d2333;
+    text-decoration: none;
+    padding: 6px 10px;
+    border-radius: 999px;
+    border: 2px solid #0d2333;
+    background: rgba(255, 255, 255, 0.95);
+    font-weight: 800;
+    transition: transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+
+.home-footer a:last-child {
+    background: #f9a825;
+    border-color: #d88f06;
+}
+
+.home-footer a:hover,
+.home-footer a:focus-visible {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 14px rgba(0, 0, 0, 0.2);
+    background: #0d2333;
+    color: #ffffff;
+    outline: none;
+}
+
+.home-footer__divider {
+    color: #5b7488;
 }
 
 @media (pointer: coarse) {
@@ -38,5 +104,15 @@ body {
         width: 100vw;
         height: 100vh;
         box-shadow: none;
+    }
+
+    .home-footer {
+        bottom: 12px;
+        padding: 10px 14px;
+        gap: 8px;
+        font-size: 13px;
+        max-width: calc(100vw - 16px);
+        flex-wrap: wrap;
+        justify-content: center;
     }
 }

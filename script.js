@@ -42,6 +42,22 @@ const VISUAL_THEME = {
     success: '#2E8B57'
 };
 
+const IMPACT_FACTS = [
+    'Every drop you catch represents cleaner water access.',
+    'Reliable clean water helps kids stay in school.',
+    'Clean water points can help protect community health.',
+    'Your run represents liters that can change daily life.'
+];
+const IMPACT_FACT_ROTATE_FRAMES = 240;
+
+const CANVAS_FONT_FAMILY =
+    getComputedStyle(document.documentElement).getPropertyValue('--brand-font').trim() ||
+    'Montserrat, sans-serif';
+
+function brandFont(weightAndSize) {
+    return `${weightAndSize} ${CANVAS_FONT_FAMILY}`;
+}
+
 // ========================================
 // IMAGE LOADING
 // ========================================
@@ -80,7 +96,10 @@ const START_BUTTON = {
         return canvas.width / 2 - this.width / 2; // Center horizontally
     },
     get y() {
-        return canvas.height / 2; // Center vertically
+        const panelHeight = Math.min(360, canvas.height * 0.6);
+        const panelY = Math.max(36, canvas.height * 0.16);
+        const bottomPadding = isMobileDevice ? 16 : 20;
+        return panelY + panelHeight - this.height - bottomPadding;
     }
 };
 
@@ -154,6 +173,55 @@ const GAMEOVER_HOME_BUTTON = {
     }
 };
 
+const DIFFICULTIES = {
+    EASY: 'easy',
+    MEDIUM: 'medium',
+    HARD: 'hard'
+};
+
+const DIFFICULTY_CONFIG = {
+    easy: {
+        label: 'EASY',
+        spawnIntervalMultiplier: 1.6,
+        speedMultiplier: 0.7,
+        objectWeightMultipliers: {
+            'water-drop': 1.2,
+            'gold-water-drop': 1.35,
+            'dirt-ball': 0.55,
+            'heart': 1.5,
+            'forcefield': 1.4
+        }
+    },
+    medium: {
+        label: 'NORMAL',
+        spawnIntervalMultiplier: 1,
+        speedMultiplier: 1,
+        objectWeightMultipliers: {
+            'water-drop': 1,
+            'gold-water-drop': 1,
+            'dirt-ball': 1,
+            'heart': 1,
+            'forcefield': 1
+        }
+    },
+    hard: {
+        label: 'HARD',
+        spawnIntervalMultiplier: 0.55,
+        speedMultiplier: 1.45,
+        objectSpeedMultipliers: {
+            'water-drop': 1.15,
+            'gold-water-drop': 1.15
+        },
+        objectWeightMultipliers: {
+            'water-drop': 0.92,
+            'gold-water-drop': 0.7,
+            'dirt-ball': 1.55,
+            'heart': 0.6,
+            'forcefield': 0.65
+        }
+    }
+};
+
 // ========================================
 // GAME VARIABLES
 // ========================================
@@ -161,6 +229,7 @@ const GAMEOVER_HOME_BUTTON = {
 let gameRunning = true;
 let mouseX = 0;
 let mouseY = 0;
+let selectedDifficulty = DIFFICULTIES.MEDIUM;
 
 // Keyboard movement state
 const movementKeys = {
@@ -183,6 +252,8 @@ const DASH_DURATION_FRAMES = 8;    // Short dash duration
 const FORCEFIELD_DURATION_FRAMES = 900; // 15 seconds at ~60 FPS
 const FORCEFIELD_FLICKER_START_FRAMES = 120; // Start warning flicker in final 2 seconds
 const FORCEFIELD_FLICKER_INTERVAL_FRAMES = 6;
+const HEART_REGEN_DURATION_FRAMES = 360; // 6 seconds at ~60 FPS
+const HEART_REGEN_MULTIPLIER = 12;
 
 // Stamina system
 const STAMINA_MAX = 100;
@@ -207,6 +278,16 @@ const STATES = {
 let gameState = STATES.START;
 let countdown = 3; // Current countdown number (3, 2, 1, or 0)
 let countdownTimer = 0; // Frame counter for countdown timing (1 second = ~60 frames)
+let impactFactIndex = 0;
+let impactFactFrameCounter = 0;
+const homeFooter = document.getElementById('homeFooter');
+
+function updateHomeFooterVisibility() {
+    if (!homeFooter) {
+        return;
+    }
+    homeFooter.classList.toggle('is-visible', gameState === STATES.START || gameState === STATES.GAMEOVER);
+}
 
 // ========================================
 // PLAYER OBJECT
@@ -287,6 +368,7 @@ let playerScaleTimer = 0;    // Frames left for player scale effect
 let screenShakeTimer = 0;    // Frames left for screen shake effect
 const SCREEN_SHAKE_STRENGTH = 8;
 let forcefieldTimer = 0;     // Frames left for dirt-ball-only invincibility
+let heartRegenTimer = 0;     // Frames left for boosted stamina regeneration
 
 // ========================================
 // GAME STATE: SCORE AND LIVES
@@ -422,7 +504,7 @@ function drawMobileControls() {
         ctx.strokeRect(button.x, button.y, button.width, button.height);
 
         ctx.fillStyle = '#000';
-        ctx.font = action === 'slow' ? 'bold 14px Arial' : 'bold 16px Arial';
+        ctx.font = action === 'slow' ? brandFont('bold 14px') : brandFont('bold 16px');
         ctx.fillText(button.label, button.x + button.width / 2, button.y + button.height / 2);
     }
 }
@@ -524,6 +606,145 @@ function updateResponsiveSizes() {
     }
 }
 
+function getSelectedDifficultyConfig() {
+    return DIFFICULTY_CONFIG[selectedDifficulty] || DIFFICULTY_CONFIG.medium;
+}
+
+function getCurrentSpawnInterval() {
+    const interval = Math.round(SPAWN_INTERVAL * getSelectedDifficultyConfig().spawnIntervalMultiplier);
+    return Math.max(20, interval);
+}
+
+function getStartDifficultyTitleY() {
+    const panelY = Math.max(36, canvas.height * 0.16);
+    const subtitleY = panelY + (isMobileDevice ? 120 : 146);
+    const buttonHeight = isMobileDevice ? 44 : 52;
+    const titleToButtonsGap = isMobileDevice ? 14 : 16;
+    const buttonsToStartGap = isMobileDevice ? 56 : 68;
+
+    const anchoredTitleY = START_BUTTON.y - buttonHeight - buttonsToStartGap - titleToButtonsGap;
+    const minimumY = subtitleY + (isMobileDevice ? 74 : 52);
+
+    return Math.max(minimumY, anchoredTitleY);
+}
+
+function getWrappedTextLines(text, maxWidth) {
+    const words = text.split(' ');
+    const lines = [];
+    let currentLine = '';
+
+    for (let i = 0; i < words.length; i++) {
+        const word = words[i];
+        const testLine = currentLine ? `${currentLine} ${word}` : word;
+
+        if (ctx.measureText(testLine).width <= maxWidth || !currentLine) {
+            currentLine = testLine;
+        } else {
+            lines.push(currentLine);
+            currentLine = word;
+        }
+    }
+
+    if (currentLine) {
+        lines.push(currentLine);
+    }
+
+    return lines;
+}
+
+function drawCenteredWrappedText(lines, centerX, startY, lineHeight) {
+    for (let i = 0; i < lines.length; i++) {
+        ctx.fillText(lines[i], centerX, startY + i * lineHeight);
+    }
+}
+
+function getDifficultyButtons() {
+    const width = isMobileDevice ? 88 : 124;
+    const height = isMobileDevice ? 44 : 52;
+    const gap = isMobileDevice ? 10 : 14;
+    const difficultyTitleY = getStartDifficultyTitleY();
+    const y = difficultyTitleY + (isMobileDevice ? 14 : 16);
+    const totalWidth = width * 3 + gap * 2;
+    const startX = canvas.width / 2 - totalWidth / 2;
+
+    return [
+        {
+            key: DIFFICULTIES.EASY,
+            label: DIFFICULTY_CONFIG.easy.label,
+            button: { x: startX, y, width, height }
+        },
+        {
+            key: DIFFICULTIES.MEDIUM,
+            label: DIFFICULTY_CONFIG.medium.label,
+            button: { x: startX + width + gap, y, width, height }
+        },
+        {
+            key: DIFFICULTIES.HARD,
+            label: DIFFICULTY_CONFIG.hard.label,
+            button: { x: startX + (width + gap) * 2, y, width, height }
+        }
+    ];
+}
+
+function handleStartScreenInteraction(x, y) {
+    if (gameState !== STATES.START) {
+        return false;
+    }
+
+    const difficultyButtons = getDifficultyButtons();
+    for (let i = 0; i < difficultyButtons.length; i++) {
+        const entry = difficultyButtons[i];
+        if (isPointInsideButton(x, y, entry.button)) {
+            selectedDifficulty = entry.key;
+            return true;
+        }
+    }
+
+    if (isPointInsideButton(x, y, START_BUTTON)) {
+        gameState = STATES.COUNTDOWN;
+        countdown = 3;
+        return true;
+    }
+
+    return false;
+}
+
+function tryPopDirtBallAtPoint(x, y) {
+    if (gameState !== STATES.PLAYING || !gameRunning) {
+        return false;
+    }
+
+    for (let i = fallingObjects.length - 1; i >= 0; i--) {
+        const obj = fallingObjects[i];
+        if (obj.type !== OBJECT_TYPES.DIRT_BALL) {
+            continue;
+        }
+
+        const hitbox = getHitbox(obj);
+        const clickHitboxPadding = isMobileDevice ? 24 : 16;
+        const expandedHitbox = {
+            x: hitbox.x - clickHitboxPadding,
+            y: hitbox.y - clickHitboxPadding,
+            width: hitbox.width + clickHitboxPadding * 2,
+            height: hitbox.height + clickHitboxPadding * 2
+        };
+        const isInsideHitbox =
+            x >= expandedHitbox.x &&
+            x <= expandedHitbox.x + expandedHitbox.width &&
+            y >= expandedHitbox.y &&
+            y <= expandedHitbox.y + expandedHitbox.height;
+
+        if (isInsideHitbox) {
+            combo += 2;
+            addFloatingText('+2 COMBO', obj.x + obj.width / 2, obj.y + obj.height / 2, VISUAL_THEME.textPrimary);
+            fallingObjects.splice(i, 1);
+            return true;
+        }
+    }
+
+    return false;
+}
+
 // ========================================
 // MULTIPLIER SYSTEM
 // ========================================
@@ -572,8 +793,11 @@ function update() {
  * START state: Waiting for player to begin
  */
 function updateStart() {
-    // TODO: Add start state logic
-    // Example: Check for key press to begin
+    impactFactFrameCounter++;
+    if (impactFactFrameCounter >= IMPACT_FACT_ROTATE_FRAMES) {
+        impactFactFrameCounter = 0;
+        impactFactIndex = (impactFactIndex + 1) % IMPACT_FACTS.length;
+    }
 }
 
 /**
@@ -636,6 +860,34 @@ function updatePlaying() {
  * - Holding Shift doubles regen speed
  */
 function updateStamina() {
+    if (heartRegenTimer > 0) {
+        heartRegenTimer--;
+    }
+
+    const heartRegenActive = heartRegenTimer > 0;
+
+    if (forcefieldTimer > 0) {
+        let regenAmount = STAMINA_REGEN_PER_FRAME;
+        if (movementKeys.slow) {
+            shiftRegenHoldFrames++;
+            const progress = Math.min(1, shiftRegenHoldFrames / STAMINA_SHIFT_REGEN_RAMP_FRAMES);
+            const rampedProgress = progress * progress;
+            const multiplier = STAMINA_SHIFT_REGEN_MIN_MULTIPLIER +
+                (STAMINA_SHIFT_REGEN_MAX_MULTIPLIER - STAMINA_SHIFT_REGEN_MIN_MULTIPLIER) * rampedProgress;
+            regenAmount *= multiplier * STAMINA_SHIFT_REGEN_SPEED_MULTIPLIER;
+        } else {
+            shiftRegenHoldFrames = 0;
+        }
+
+        if (heartRegenActive) {
+            regenAmount *= HEART_REGEN_MULTIPLIER;
+        }
+
+        stamina += regenAmount;
+        stamina = Math.max(0, Math.min(STAMINA_MAX, stamina));
+        return;
+    }
+
     if (movementKeys.boost) {
         stamina -= STAMINA_W_DRAIN_PER_FRAME;
         shiftRegenHoldFrames = 0;
@@ -651,6 +903,11 @@ function updateStamina() {
         } else {
             shiftRegenHoldFrames = 0;
         }
+
+        if (heartRegenActive) {
+            regenAmount *= HEART_REGEN_MULTIPLIER;
+        }
+
         stamina += regenAmount;
     }
 
@@ -705,7 +962,7 @@ function updatePlayer() {
  * W = 2x speed, Shift = 0.5x speed
  */
 function getMovementSpeedMultiplier() {
-    const boostActive = movementKeys.boost && stamina > 0;
+    const boostActive = movementKeys.boost && (stamina > 0 || forcefieldTimer > 0);
 
     if (boostActive && movementKeys.slow) {
         return boostPriorityOrder > slowPriorityOrder ? 2 : 0.5;
@@ -823,9 +1080,10 @@ function getScreenShakeOffset() {
 function spawnFallingObject() {
     // Increment spawn timer
     spawnTimer++;
+    const currentSpawnInterval = getCurrentSpawnInterval();
     
     // Check if it's time to spawn a new object
-    if (spawnTimer >= SPAWN_INTERVAL) {
+    if (spawnTimer >= currentSpawnInterval) {
         spawnTimer = 0; // Reset timer
         
         // Pick a random object type based on spawn weights
@@ -895,27 +1153,42 @@ function getAspectFitDimensions(image, maxWidth, maxHeight) {
  */
 function getRandomizedSpeed(objectType) {
     const baseSpeed = OBJECT_SPEEDS[objectType];
+    const difficultyConfig = getSelectedDifficultyConfig();
+    const difficultySpeedMultiplier =
+        difficultyConfig.objectSpeedMultipliers?.[objectType] ?? difficultyConfig.speedMultiplier;
     const minFactor = 0.7;
     const maxFactor = 2.0;
     
     // Random value between minFactor and maxFactor
     const randomFactor = minFactor + Math.random() * (maxFactor - minFactor);
     
-    return baseSpeed * randomFactor;
+    return baseSpeed * randomFactor * difficultySpeedMultiplier;
 }
 
 /**
  * Get a weighted random object type based on spawn weights
  */
 function getWeightedRandomObject() {
+    const weightMultipliers = getSelectedDifficultyConfig().objectWeightMultipliers || {};
+
+    const adjustedEntries = Object.entries(SPAWN_WEIGHTS).map(([type, weight]) => {
+        const multiplier = weightMultipliers[type] ?? 1;
+        const adjustedWeight = Math.max(0, weight * multiplier);
+        return [type, adjustedWeight];
+    });
+
     // Calculate total weight
-    const totalWeight = Object.values(SPAWN_WEIGHTS).reduce((a, b) => a + b, 0);
+    const totalWeight = adjustedEntries.reduce((sum, [, adjustedWeight]) => sum + adjustedWeight, 0);
+
+    if (totalWeight <= 0) {
+        return OBJECT_TYPES.WATER_DROP;
+    }
     
     // Pick a random number from 0 to totalWeight
     let random = Math.random() * totalWeight;
     
     // Find which object type this falls into
-    for (const [type, weight] of Object.entries(SPAWN_WEIGHTS)) {
+    for (const [type, weight] of adjustedEntries) {
         random -= weight;
         if (random <= 0) {
             return type;
@@ -1014,7 +1287,7 @@ function handleCollision(fallingObj) {
             // Ignore harmful effects while dashing or forcefield is active
             if (dashInvincible || forcefieldTimer > 0) {
                 combo += 2;
-                addFloatingText('INVINCIBLE', centerX, centerY, VISUAL_THEME.textPrimary);
+                addFloatingText('+2 COMBO', centerX, centerY, VISUAL_THEME.textPrimary);
                 break;
             }
 
@@ -1040,6 +1313,8 @@ function handleCollision(fallingObj) {
             } else {
                 addFloatingText('MAX LIFE', centerX, centerY, '#2e8b57');
             }
+            heartRegenTimer = HEART_REGEN_DURATION_FRAMES;
+            addFloatingText('FAST REGEN', centerX, centerY - 28, '#2e8b57');
             combo++;
             break;
 
@@ -1120,6 +1395,7 @@ function draw() {
     ctx.translate(shakeOffset.x, shakeOffset.y);
 
     // Draw based on current game state
+    updateHomeFooterVisibility();
     switch (gameState) {
         case STATES.START:
             drawStart();
@@ -1227,8 +1503,10 @@ function drawPauseOverlay() {
 
     ctx.fillStyle = VISUAL_THEME.textPrimary;
     ctx.textAlign = 'center';
-    ctx.font = 'bold 56px Arial';
+    ctx.font = brandFont('bold 56px');
     ctx.fillText('PAUSED', canvas.width / 2, canvas.height / 2 - 120);
+
+    drawControlsHelp('pause');
 
     drawButton(PAUSE_RESUME_BUTTON, 'RESUME');
     drawButton(PAUSE_RESET_BUTTON, 'RESET');
@@ -1246,22 +1524,102 @@ function drawStart() {
     drawPanel(panelX, panelY, panelWidth, panelHeight, 18);
 
     // Draw title
+    const subtitleY = panelY + (isMobileDevice ? 116 : 146);
+    const difficultyTitleY = getStartDifficultyTitleY();
+
     ctx.fillStyle = VISUAL_THEME.textPrimary;
-    ctx.font = isMobileDevice ? 'bold 38px Arial' : 'bold 48px Arial';
+    ctx.font = isMobileDevice ? brandFont('bold 38px') : brandFont('bold 48px');
     ctx.textAlign = 'center';
     ctx.fillText('Water Drop Game', canvas.width / 2, panelY + (isMobileDevice ? 78 : 96));
 
     ctx.fillStyle = VISUAL_THEME.textMuted;
-    ctx.font = isMobileDevice ? '18px Arial' : '22px Arial';
-    ctx.fillText('Catch clean water. Avoid dirt. Save more lives.', canvas.width / 2, panelY + (isMobileDevice ? 120 : 146));
+    ctx.font = isMobileDevice ? brandFont('16px') : brandFont('22px');
+    const subtitleText = 'Catch clean water. Avoid dirt. Support communities.';
+    const subtitleMaxWidth = panelWidth - (isMobileDevice ? 48 : 28);
+    const subtitleLines = getWrappedTextLines(subtitleText, subtitleMaxWidth);
+    const subtitleLineHeight = isMobileDevice ? 20 : 24;
+    drawCenteredWrappedText(subtitleLines, canvas.width / 2, subtitleY, subtitleLineHeight);
 
-    if (isMobileDevice) {
-        ctx.font = '18px Arial';
-        ctx.fillText('Tap START, then use on-screen controls', canvas.width / 2, panelY + 164);
+    const currentFact = IMPACT_FACTS[impactFactIndex];
+    const subtitleBottomY = subtitleY + subtitleLineHeight * (subtitleLines.length - 1);
+    const factY = subtitleBottomY + (difficultyTitleY - subtitleBottomY) / 2;
+    const factAreaHeight = difficultyTitleY - subtitleBottomY;
+    const factFont = isMobileDevice ? brandFont('600 14px') : brandFont('600 16px');
+    const maxFactWidth = panelWidth - (isMobileDevice ? 40 : 58);
+    ctx.font = factFont;
+    const factLines = getWrappedTextLines(currentFact, maxFactWidth - 26);
+    const factLineHeight = isMobileDevice ? 16 : 18;
+    const widestFactLine = factLines.reduce((max, line) => Math.max(max, ctx.measureText(line).width), 0);
+    const factTextWidth = Math.min(maxFactWidth, widestFactLine + 26);
+    const factBoxHeight = (isMobileDevice ? 18 : 18) + factLineHeight * factLines.length;
+    const factBoxX = canvas.width / 2 - factTextWidth / 2;
+    const factBoxY = factY - factBoxHeight / 2;
+
+    if (factAreaHeight >= (isMobileDevice ? 66 : 66)) {
+        drawRoundedRectPath(factBoxX, factBoxY, factTextWidth, factBoxHeight, 12);
+        ctx.fillStyle = 'rgba(249, 168, 37, 0.24)';
+        ctx.fill();
+        drawRoundedRectPath(factBoxX, factBoxY, factTextWidth, factBoxHeight, 12);
+        ctx.strokeStyle = 'rgba(13, 35, 51, 0.22)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        ctx.fillStyle = VISUAL_THEME.textPrimary;
+        ctx.font = factFont;
+        drawCenteredWrappedText(
+            factLines,
+            canvas.width / 2,
+            factY - ((factLines.length - 1) * factLineHeight) / 2 + 1,
+            factLineHeight
+        );
     }
+
+    ctx.fillStyle = VISUAL_THEME.textPrimary;
+    ctx.font = isMobileDevice ? brandFont('bold 18px') : brandFont('bold 22px');
+    ctx.fillText('Difficulty', canvas.width / 2, difficultyTitleY);
+
+    const difficultyButtons = getDifficultyButtons();
+    for (let i = 0; i < difficultyButtons.length; i++) {
+        const entry = difficultyButtons[i];
+        drawDifficultyButton(entry.button, entry.label, selectedDifficulty === entry.key);
+    }
+
+    drawControlsHelp('start');
 
     // Draw Start button
     drawButton(START_BUTTON, 'START');
+}
+
+function drawDifficultyButton(button, label, isSelected) {
+    const gradient = ctx.createLinearGradient(0, button.y, 0, button.y + button.height);
+
+    if (isSelected) {
+        gradient.addColorStop(0, '#FFE182');
+        gradient.addColorStop(1, '#FFC700');
+    } else {
+        gradient.addColorStop(0, 'rgba(255, 255, 255, 0.85)');
+        gradient.addColorStop(1, 'rgba(235, 242, 248, 0.9)');
+    }
+
+    ctx.save();
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.18)';
+    ctx.shadowBlur = 8;
+    ctx.shadowOffsetY = 3;
+    drawRoundedRectPath(button.x, button.y, button.width, button.height, 12);
+    ctx.fillStyle = gradient;
+    ctx.fill();
+    ctx.restore();
+
+    drawRoundedRectPath(button.x, button.y, button.width, button.height, 12);
+    ctx.strokeStyle = isSelected ? 'rgba(0, 0, 0, 0.28)' : 'rgba(0, 0, 0, 0.14)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    ctx.fillStyle = VISUAL_THEME.textPrimary;
+    ctx.font = isMobileDevice ? brandFont('bold 16px') : brandFont('bold 18px');
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, button.x + button.width / 2, button.y + button.height / 2);
 }
 
 /**
@@ -1292,7 +1650,7 @@ function drawButton(button, label) {
 
     // Draw button text
     ctx.fillStyle = button.textColor;
-    ctx.font = 'bold 30px Arial';
+    ctx.font = brandFont('bold 30px');
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(label, button.x + button.width / 2, button.y + button.height / 2 + yOffset);
@@ -1391,7 +1749,7 @@ function drawPlayerForcefieldOverlay() {
 function drawFloatingTexts() {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.font = 'bold 28px Arial';
+    ctx.font = brandFont('bold 28px');
 
     for (let i = 0; i < floatingTexts.length; i++) {
         const effect = floatingTexts[i];
@@ -1477,11 +1835,11 @@ function drawUI() {
     const multiplier = getMultiplier();
 
     const statRows = [
-        { label: 'Score', value: `${score} L`, color: VISUAL_THEME.textPrimary },
+        { label: 'Clean Water', value: `${score} L`, color: VISUAL_THEME.textPrimary },
         { label: 'Lives', value: `${lives}`, color: VISUAL_THEME.textPrimary },
-        { label: 'Combo', value: `${combo}`, color: VISUAL_THEME.textPrimary },
-        { label: 'Multiplier', value: `${multiplier}x`, color: multiplier > 1 ? VISUAL_THEME.accent : VISUAL_THEME.textPrimary },
-        { label: 'Goal', value: `${currentGoal} L`, color: VISUAL_THEME.textPrimary }
+        { label: 'Momentum', value: `${combo}`, color: VISUAL_THEME.textPrimary },
+        { label: 'Impact Boost', value: `${multiplier}x`, color: multiplier > 1 ? VISUAL_THEME.accent : VISUAL_THEME.textPrimary },
+        { label: 'Next Goal', value: `${currentGoal} L`, color: VISUAL_THEME.textPrimary }
     ];
 
     if (forcefieldTimer > 0) {
@@ -1499,8 +1857,8 @@ function drawUI() {
     ctx.fillStyle = VISUAL_THEME.textPrimary;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    ctx.font = isMobileDevice ? 'bold 19px Arial' : 'bold 22px Arial';
-    ctx.fillText('Session Stats', contentLeft, layout.panelY + layout.headerHeight / 2 + 2);
+    ctx.font = isMobileDevice ? brandFont('bold 19px') : brandFont('bold 22px');
+    ctx.fillText('Impact Stats', contentLeft, layout.panelY + layout.headerHeight / 2 + 2);
 
     // Divider below header
     ctx.strokeStyle = 'rgba(0, 0, 0, 0.14)';
@@ -1525,12 +1883,12 @@ function drawUI() {
         }
 
         ctx.fillStyle = VISUAL_THEME.textMuted;
-        ctx.font = isMobileDevice ? 'bold 16px Arial' : 'bold 18px Arial';
+        ctx.font = isMobileDevice ? brandFont('bold 16px') : brandFont('bold 18px');
         ctx.textAlign = 'left';
         ctx.fillText(row.label, contentLeft, rowCenterY);
 
         ctx.fillStyle = row.color;
-        ctx.font = isMobileDevice ? 'bold 17px Arial' : 'bold 19px Arial';
+        ctx.font = isMobileDevice ? brandFont('bold 17px') : brandFont('bold 19px');
         ctx.textAlign = 'right';
         ctx.fillText(row.value, contentRight, rowCenterY);
     }
@@ -1558,7 +1916,7 @@ function drawStaminaBar() {
 
     // Label
     ctx.fillStyle = VISUAL_THEME.textPrimary;
-    ctx.font = isMobileDevice ? 'bold 15px Arial' : 'bold 18px Arial';
+    ctx.font = isMobileDevice ? brandFont('bold 15px') : brandFont('bold 18px');
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
     ctx.fillText('Stamina', barX, barY - 22);
@@ -1584,39 +1942,47 @@ function drawStaminaBar() {
 }
 
 /**
- * Draw controls help text under the top-right game stats
+ * Draw controls/instructions help panel
  */
-function drawControlsHelp() {
-    if (isMobileDevice) {
-        return;
-    }
+function drawControlsHelp(screen = 'start') {
+    const padding = isMobileDevice ? 12 : 20;
+    const lineHeight = isMobileDevice ? 18 : 22;
+    const titleFont = isMobileDevice ? brandFont('bold 16px') : brandFont('bold 20px');
+    const bodyFont = isMobileDevice ? brandFont('14px') : brandFont('17px');
+    const lineItems = isMobileDevice
+        ? [
+            'Touch A/D to move • W to boost',
+            'Shift slows and rebuilds stamina',
+            'Dash into dirt balls OR tap them: +2 combo',
+            'Catch water drops, avoid dirt unless comboing',
+            'Use Pause to reset or return home'
+        ]
+        : [
+            'A/D move • W boost • Shift slows + regen',
+            'Space dashes • Enter pauses/resumes',
+            'Dash into dirt balls OR click them: +2 combo',
+            'Catch water drops for liters and combo',
+            'Avoid dirt balls unless using dash/combo play'
+        ];
 
-    const padding = 20;
-    const lineHeight = 24;
-    const lineItems = [
-        'A/D: Move',
-        'W: Boost',
-        'Shift: Slow + Regen',
-        'Space: Evade',
-        'Enter: Stop/Resume'
-    ];
-    const lines = 6;
-    const panelWidth = 320;
-    const panelHeight = lines * lineHeight + 36;
+    const panelWidth = isMobileDevice ? Math.min(430, canvas.width - padding * 2) : 430;
+    const panelHeight = 56 + lineItems.length * lineHeight;
     const panelX = padding;
-    const panelY = canvas.height - panelHeight - padding;
+    const panelY = screen === 'pause'
+        ? canvas.height - panelHeight - padding
+        : Math.min(canvas.height - panelHeight - padding, START_BUTTON.y + START_BUTTON.height + (isMobileDevice ? 10 : 16));
     let y = panelY + 12;
+
     drawPanel(panelX, panelY, panelWidth, panelHeight, 14);
 
-    // Title
     ctx.fillStyle = VISUAL_THEME.textPrimary;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
-    ctx.font = 'bold 20px Arial';
-    ctx.fillText('Controls', panelX + 14, y);
+    ctx.font = titleFont;
+    ctx.fillText('How To Play', panelX + 14, y);
     y += lineHeight + 4;
 
-    ctx.font = '17px Arial';
+    ctx.font = bodyFont;
     ctx.fillStyle = VISUAL_THEME.textMuted;
     for (let i = 0; i < lineItems.length; i++) {
         ctx.fillText(lineItems[i], panelX + 14, y);
@@ -1637,7 +2003,7 @@ function drawCountdown() {
 
     // Draw countdown text
     ctx.fillStyle = '#000';
-    ctx.font = 'bold 80px Arial';
+    ctx.font = brandFont('bold 80px');
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(displayText, canvas.width / 2, canvas.height / 2);
@@ -1658,9 +2024,6 @@ function drawPlaying() {
 
     // Draw stamina bar
     drawStaminaBar();
-
-    // Draw controls help panel
-    drawControlsHelp();
 
     // Draw on-screen touch controls for mobile
     drawMobileControls();
@@ -1686,24 +2049,24 @@ function drawGameOver() {
 
     // Draw game over text
     ctx.fillStyle = VISUAL_THEME.textPrimary;
-    ctx.font = 'bold 50px Arial';
+    ctx.font = brandFont('bold 50px');
     ctx.textAlign = 'center';
-    ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2 - 140);
+    ctx.fillText('MISSION SUMMARY', canvas.width / 2, canvas.height / 2 - 140);
 
     // Draw final score
-    ctx.font = 'bold 32px Arial';
-    ctx.fillText(`Final Score: ${score} L`, canvas.width / 2, canvas.height / 2 - 80);
+    ctx.font = brandFont('bold 32px');
+    ctx.fillText(`Clean Water Collected: ${score} L`, canvas.width / 2, canvas.height / 2 - 80);
 
     // Draw water impact message
-    ctx.font = isMobileDevice ? '18px Arial' : '22px Arial';
+    ctx.font = isMobileDevice ? brandFont('18px') : brandFont('22px');
     ctx.fillStyle = VISUAL_THEME.textMuted;
-    ctx.fillText('In the real world, the average person needs about 20 liters a day.', canvas.width / 2, canvas.height / 2 - 20);
+    ctx.fillText('In many places, reliable clean water still changes everything.', canvas.width / 2, canvas.height / 2 - 20);
     ctx.fillStyle = VISUAL_THEME.textPrimary;
-    ctx.fillText(`You helped ${helpedPeople} people!`, canvas.width / 2, canvas.height / 2 + 20);
+    ctx.fillText(`Your run represents support for about ${helpedPeople} people.`, canvas.width / 2, canvas.height / 2 + 20);
 
     // Draw restart instruction
-    ctx.font = '20px Arial';
-    ctx.fillText('Click PLAY AGAIN to restart', canvas.width / 2, canvas.height / 2 + 80);
+    ctx.font = brandFont('20px');
+    ctx.fillText('Play again to grow your impact.', canvas.width / 2, canvas.height / 2 + 80);
 
     // Draw Play Again button
     drawButton(PLAY_AGAIN_BUTTON, 'PLAY AGAIN');
@@ -1773,16 +2136,23 @@ canvas.addEventListener('touchcancel', handleCanvasTouchEnd, { passive: false })
  * Detect mouse clicks on buttons
  */
 document.addEventListener('click', (event) => {
+    if (event.target && typeof event.target.closest === 'function' && event.target.closest('#homeFooter')) {
+        return;
+    }
+
     const rect = canvas.getBoundingClientRect();
     const clickX = event.clientX - rect.left;
     const clickY = event.clientY - rect.top;
     
-    // Check if click was on the start button
-    if (gameState === STATES.START && isPointInsideButton(clickX, clickY, START_BUTTON)) {
-        // Start the countdown
-        gameState = STATES.COUNTDOWN;
-        countdown = 3;
-    } else if (gameState === STATES.GAMEOVER && isPointInsideButton(clickX, clickY, PLAY_AGAIN_BUTTON)) {
+    if (handleStartScreenInteraction(clickX, clickY)) {
+        return;
+    }
+
+    if (tryPopDirtBallAtPoint(clickX, clickY)) {
+        return;
+    }
+
+    if (gameState === STATES.GAMEOVER && isPointInsideButton(clickX, clickY, PLAY_AGAIN_BUTTON)) {
         restartGameFromPause();
     } else if (gameState === STATES.GAMEOVER && isPointInsideButton(clickX, clickY, GAMEOVER_HOME_BUTTON)) {
         resetGameToStart();
@@ -1799,17 +2169,30 @@ document.addEventListener('click', (event) => {
  * Detect touch on buttons (mobile support)
  */
 document.addEventListener('touchend', (event) => {
+    if (event.target && typeof event.target.closest === 'function' && event.target.closest('#homeFooter')) {
+        return;
+    }
+
+    // Always release any on-canvas control mappings for ended touches
+    handleCanvasTouchEnd(event);
+
     const rect = canvas.getBoundingClientRect();
     const touch = event.changedTouches[0];
+    if (!touch) {
+        return;
+    }
     const touchX = touch.clientX - rect.left;
     const touchY = touch.clientY - rect.top;
     
-    // Check if touch was on the start button
-    if (gameState === STATES.START && isPointInsideButton(touchX, touchY, START_BUTTON)) {
-        // Start the countdown
-        gameState = STATES.COUNTDOWN;
-        countdown = 3;
-    } else if (gameState === STATES.GAMEOVER && isPointInsideButton(touchX, touchY, PLAY_AGAIN_BUTTON)) {
+    if (handleStartScreenInteraction(touchX, touchY)) {
+        return;
+    }
+
+    if (tryPopDirtBallAtPoint(touchX, touchY)) {
+        return;
+    }
+
+    if (gameState === STATES.GAMEOVER && isPointInsideButton(touchX, touchY, PLAY_AGAIN_BUTTON)) {
         restartGameFromPause();
     } else if (gameState === STATES.GAMEOVER && isPointInsideButton(touchX, touchY, GAMEOVER_HOME_BUTTON)) {
         resetGameToStart();
@@ -1820,6 +2203,11 @@ document.addEventListener('touchend', (event) => {
     } else if (!gameRunning && gameState === STATES.PLAYING && isPointInsideButton(touchX, touchY, PAUSE_HOME_BUTTON)) {
         returnToHomeFromPause();
     }
+});
+
+document.addEventListener('touchcancel', (event) => {
+    // Cancelled touches should also release mapped controls (prevents stuck boost)
+    handleCanvasTouchEnd(event);
 });
 
 /**
@@ -1922,6 +2310,7 @@ function resetGameToStart() {
     playerScaleTimer = 0;
     screenShakeTimer = 0;
     forcefieldTimer = 0;
+    heartRegenTimer = 0;
 
     // Reset movement key state
     movementKeys.left = false;
@@ -1965,9 +2354,13 @@ function returnToHomeFromPause() {
  */
 function handleSpaceKey() {
     if (gameState === STATES.PLAYING) {
+        const hasForcefield = forcefieldTimer > 0;
+
         // Dash costs stamina
-        if (stamina >= DASH_STAMINA_COST) {
-            stamina -= DASH_STAMINA_COST;
+        if (hasForcefield || stamina >= DASH_STAMINA_COST) {
+            if (!hasForcefield) {
+                stamina -= DASH_STAMINA_COST;
+            }
             dashDirection = lastMoveDirection === 'left' ? -1 : 1;
             dashFramesLeft = DASH_DURATION_FRAMES;
         }
@@ -2001,6 +2394,7 @@ function initializeGame() {
     playerScaleTimer = 0;
     screenShakeTimer = 0;
     forcefieldTimer = 0;
+    heartRegenTimer = 0;
 
     // Reset movement key state
     movementKeys.left = false;
