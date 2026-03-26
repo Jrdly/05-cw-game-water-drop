@@ -399,6 +399,72 @@ let forcefieldTimer = 0;     // Frames left for dirt-ball-only invincibility
 let heartRegenTimer = 0;     // Frames left for boosted stamina regeneration
 
 // ========================================
+// SOUND EFFECTS
+// ========================================
+
+let sfxContext = null;
+
+function getSfxContext() {
+    if (!sfxContext) {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContextClass) {
+            return null;
+        }
+        sfxContext = new AudioContextClass();
+    }
+
+    if (sfxContext.state === 'suspended') {
+        sfxContext.resume().catch(() => {});
+    }
+
+    return sfxContext;
+}
+
+function playPickupSfx() {
+    const context = getSfxContext();
+    if (!context) return;
+
+    const now = context.currentTime;
+    const gainNode = context.createGain();
+    gainNode.gain.setValueAtTime(0.0001, now);
+    gainNode.gain.exponentialRampToValueAtTime(0.12, now + 0.01);
+    gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.16);
+
+    const osc = context.createOscillator();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(700, now);
+    osc.frequency.exponentialRampToValueAtTime(1050, now + 0.12);
+
+    osc.connect(gainNode);
+    gainNode.connect(context.destination);
+
+    osc.start(now);
+    osc.stop(now + 0.18);
+}
+
+function playDirtBallSfx() {
+    const context = getSfxContext();
+    if (!context) return;
+
+    const now = context.currentTime;
+    const gainNode = context.createGain();
+    gainNode.gain.setValueAtTime(0.0001, now);
+    gainNode.gain.exponentialRampToValueAtTime(0.2, now + 0.006);
+    gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.12);
+
+    const osc = context.createOscillator();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(210, now);
+    osc.frequency.exponentialRampToValueAtTime(95, now + 0.1);
+
+    osc.connect(gainNode);
+    gainNode.connect(context.destination);
+
+    osc.start(now);
+    osc.stop(now + 0.13);
+}
+
+// ========================================
 // GAME STATE: SCORE AND LIVES
 // ========================================
 
@@ -776,6 +842,7 @@ function tryPopDirtBallAtPoint(x, y) {
             combo += 2;
             registerDirtBallClickChallengeProgress();
             addFloatingText('+2 COMBO', obj.x + obj.width / 2, obj.y + obj.height / 2, VISUAL_THEME.textPrimary);
+            playDirtBallSfx();
             fallingObjects.splice(i, 1);
             return true;
         }
@@ -1426,6 +1493,7 @@ function handleCollision(fallingObj) {
             combo++;
             addFloatingText(`+${10 * multiplier}`, centerX, centerY, '#0077ff');
             triggerPlayerCatchEffect();
+            playPickupSfx();
             break;
             
         case OBJECT_TYPES.GOLD_WATER_DROP:
@@ -1433,6 +1501,7 @@ function handleCollision(fallingObj) {
             combo += 3;
             addFloatingText(`+${50 * multiplier}`, centerX, centerY, '#d4a017');
             triggerPlayerCatchEffect();
+            playPickupSfx();
             break;
             
         case OBJECT_TYPES.DIRT_BALL:
@@ -1449,6 +1518,7 @@ function handleCollision(fallingObj) {
             addFloatingText('-1 LIFE', centerX, centerY, '#8b0000');
             addFloatingText('-100', centerX, centerY - 30, '#8b0000');
             triggerMudHitEffect();
+            playDirtBallSfx();
             
             // Check if game over
             if (lives <= 0) {
@@ -1468,12 +1538,14 @@ function handleCollision(fallingObj) {
             heartRegenTimer = HEART_REGEN_DURATION_FRAMES;
             addFloatingText('FAST REGEN', centerX, centerY - 28, '#2e8b57');
             combo++;
+            playPickupSfx();
             break;
 
         case OBJECT_TYPES.FORCEFIELD:
             forcefieldTimer = FORCEFIELD_DURATION_FRAMES;
             combo++;
             addFloatingText('FORCEFIELD!', centerX, centerY, '#6a5acd');
+            playPickupSfx();
             break;
     }
 }
