@@ -184,6 +184,7 @@ const DIFFICULTY_CONFIG = {
         label: 'EASY',
         maxLives: 4,
         spawnIntervalMultiplier: 1.6,
+        waveIntervalMultiplier: 1.35,
         speedMultiplier: 0.7,
         speedRollExponent: 0.82,
         objectWeightMultipliers: {
@@ -198,6 +199,7 @@ const DIFFICULTY_CONFIG = {
         label: 'NORMAL',
         maxLives: 3,
         spawnIntervalMultiplier: 1,
+        waveIntervalMultiplier: 1,
         speedMultiplier: 1,
         speedRollExponent: 0.72,
         dirtLateralSpeedRange: {
@@ -216,6 +218,7 @@ const DIFFICULTY_CONFIG = {
         label: 'HARD',
         maxLives: 2,
         spawnIntervalMultiplier: 0.55,
+        waveIntervalMultiplier: 0.72,
         speedMultiplier: 1.45,
         speedRollExponent: 0.62,
         objectSpeedMultipliers: {
@@ -486,6 +489,76 @@ let challengeType = 'dirt-clicks'; // 'dirt-clicks' | 'hard-survival'
 let challengeProgress = 0; // Clicks for easy/normal, frames survived for hard
 let challengeGoal = CHALLENGE_DIRT_CLICKS_START;
 
+const EVENT_WAVE_INTERVAL_MIN_SECONDS = 30;
+const EVENT_WAVE_INTERVAL_MAX_SECONDS = 45;
+const EVENT_WAVE_ANNOUNCEMENT_FRAMES = 140;
+const EVENT_WAVE_MIN_SPAWN_INTERVAL_FRAMES = 15;
+
+const EVENT_WAVES = [
+    {
+        id: 'golden-rain',
+        label: 'GOLDEN RAIN',
+        durationFrames: 14 * FRAMES_PER_SECOND,
+        spawnIntervalMultiplier: 0.55,
+        speedMultiplier: 0.95,
+        scoreMultiplierByType: {
+            'water-drop': 1.5,
+            'gold-water-drop': 2
+        },
+        objectWeightMultipliers: {
+            'water-drop': 1.1,
+            'gold-water-drop': 4.5,
+            'dirt-ball': 0.45,
+            'heart': 0.9,
+            'forcefield': 0.9
+        },
+        announceColor: VISUAL_THEME.accent
+    },
+    {
+        id: 'mud-storm',
+        label: 'MUD STORM',
+        durationFrames: 12 * FRAMES_PER_SECOND,
+        spawnIntervalMultiplier: 0.6,
+        speedMultiplier: 1.28,
+        scoreMultiplierByType: {},
+        objectWeightMultipliers: {
+            'water-drop': 0.55,
+            'gold-water-drop': 0.6,
+            'dirt-ball': 3.25,
+            'heart': 0.7,
+            'forcefield': 1.1
+        },
+        announceColor: VISUAL_THEME.danger
+    },
+    {
+        id: 'recovery-window',
+        label: 'RECOVERY WINDOW',
+        durationFrames: 12 * FRAMES_PER_SECOND,
+        spawnIntervalMultiplier: 0.62,
+        speedMultiplier: 0.9,
+        scoreMultiplierByType: {
+            'water-drop': 1.2,
+            'gold-water-drop': 1.25
+        },
+        objectWeightMultipliers: {
+            'water-drop': 0.95,
+            'gold-water-drop': 0.95,
+            'dirt-ball': 0.5,
+            'heart': 3.5,
+            'forcefield': 2.4
+        },
+        staminaRegenMultiplier: 1.9,
+        announceColor: VISUAL_THEME.success
+    }
+];
+
+let activeEventWave = null;
+let activeEventWaveFramesLeft = 0;
+let eventWaveFramesUntilNext = 0;
+let eventWaveAnnouncementTimer = 0;
+let eventWaveAnnouncementText = '';
+let lastEventWaveId = null;
+
 // ========================================
 // MOBILE TOUCH CONTROLS
 // ========================================
@@ -716,7 +789,10 @@ function getSelectedDifficultyConfig() {
 
 function getCurrentSpawnInterval() {
     const interval = Math.round(SPAWN_INTERVAL * getSelectedDifficultyConfig().spawnIntervalMultiplier);
-    return Math.max(20, interval);
+    const wave = getActiveEventWave();
+    const waveMultiplier = wave?.spawnIntervalMultiplier ?? 1;
+    const adjustedInterval = Math.round(interval * waveMultiplier);
+    return Math.max(EVENT_WAVE_MIN_SPAWN_INTERVAL_FRAMES, adjustedInterval);
 }
 
 function getStartDifficultyTitleY() {
@@ -995,6 +1071,9 @@ function updatePlaying() {
 
     // Update short-lived visual effects
     updateVisualEffects();
+
+    // Handle periodic event waves
+    updateEventWaves();
     
     // Spawn falling objects
     spawnFallingObject();
@@ -1024,6 +1103,7 @@ function updateStamina() {
     }
 
     const heartRegenActive = heartRegenTimer > 0;
+    const waveRegenMultiplier = getActiveEventWave()?.staminaRegenMultiplier || 1;
 
     if (forcefieldTimer > 0) {
         let regenAmount = STAMINA_REGEN_PER_FRAME;
@@ -1041,6 +1121,8 @@ function updateStamina() {
         if (heartRegenActive) {
             regenAmount *= HEART_REGEN_MULTIPLIER;
         }
+
+        regenAmount *= waveRegenMultiplier;
 
         stamina += regenAmount;
         stamina = Math.max(0, Math.min(STAMINA_MAX, stamina));
@@ -1067,11 +1149,102 @@ function updateStamina() {
             regenAmount *= HEART_REGEN_MULTIPLIER;
         }
 
+        regenAmount *= waveRegenMultiplier;
+
         stamina += regenAmount;
     }
 
     // Clamp stamina to valid range
     stamina = Math.max(0, Math.min(STAMINA_MAX, stamina));
+}
+
+function getActiveEventWave() {
+    if (activeEventWaveFramesLeft <= 0) {
+        return null;
+    }
+
+    return activeEventWave;
+}
+
+function getEventWaveIntervalFrames() {
+    const difficultyMultiplier = getSelectedDifficultyConfig().waveIntervalMultiplier ?? 1;
+    const minFrames = Math.round(EVENT_WAVE_INTERVAL_MIN_SECONDS * FRAMES_PER_SECOND * difficultyMultiplier);
+    const maxFrames = Math.round(EVENT_WAVE_INTERVAL_MAX_SECONDS * FRAMES_PER_SECOND * difficultyMultiplier);
+    const min = Math.min(minFrames, maxFrames);
+    const max = Math.max(minFrames, maxFrames);
+
+    return min + Math.floor(Math.random() * (max - min + 1));
+}
+
+function resetEventWaveCycle() {
+    activeEventWave = null;
+    activeEventWaveFramesLeft = 0;
+    eventWaveAnnouncementTimer = 0;
+    eventWaveAnnouncementText = '';
+    lastEventWaveId = null;
+    eventWaveFramesUntilNext = getEventWaveIntervalFrames();
+}
+
+function getNextEventWave() {
+    if (EVENT_WAVES.length === 0) {
+        return null;
+    }
+
+    if (EVENT_WAVES.length === 1) {
+        return EVENT_WAVES[0];
+    }
+
+    const eligibleWaves = EVENT_WAVES.filter((wave) => wave.id !== lastEventWaveId);
+    const pool = eligibleWaves.length > 0 ? eligibleWaves : EVENT_WAVES;
+    const randomIndex = Math.floor(Math.random() * pool.length);
+    return pool[randomIndex];
+}
+
+function startEventWave() {
+    const wave = getNextEventWave();
+    if (!wave) {
+        eventWaveFramesUntilNext = getEventWaveIntervalFrames();
+        return;
+    }
+
+    activeEventWave = wave;
+    activeEventWaveFramesLeft = wave.durationFrames;
+    lastEventWaveId = wave.id;
+    eventWaveAnnouncementTimer = EVENT_WAVE_ANNOUNCEMENT_FRAMES;
+    eventWaveAnnouncementText = `${wave.label}!`;
+    screenShakeTimer = Math.max(screenShakeTimer, 5);
+}
+
+function updateEventWaves() {
+    if (eventWaveAnnouncementTimer > 0) {
+        eventWaveAnnouncementTimer--;
+    }
+
+    if (activeEventWaveFramesLeft > 0 && activeEventWave) {
+        activeEventWaveFramesLeft--;
+        if (activeEventWaveFramesLeft <= 0) {
+            activeEventWave = null;
+            activeEventWaveFramesLeft = 0;
+            eventWaveFramesUntilNext = getEventWaveIntervalFrames();
+        }
+        return;
+    }
+
+    if (eventWaveFramesUntilNext > 0) {
+        eventWaveFramesUntilNext--;
+        return;
+    }
+
+    startEventWave();
+}
+
+function getWaveScoreMultiplierForType(objectType) {
+    const wave = getActiveEventWave();
+    if (!wave || !wave.scoreMultiplierByType) {
+        return 1;
+    }
+
+    return wave.scoreMultiplierByType[objectType] ?? 1;
 }
 
 /**
@@ -1341,6 +1514,7 @@ function getRandomizedSpeed(objectType) {
     const difficultySpeedMultiplier =
         difficultyConfig.objectSpeedMultipliers?.[objectType] ?? difficultyConfig.speedMultiplier;
     const speedRollExponent = difficultyConfig.speedRollExponent ?? 1;
+    const waveSpeedMultiplier = getActiveEventWave()?.speedMultiplier ?? 1;
     const minFactor = 0.7;
     const maxFactor = 2.0;
     
@@ -1348,7 +1522,7 @@ function getRandomizedSpeed(objectType) {
     const speedRoll = Math.pow(Math.random(), speedRollExponent);
     const randomFactor = minFactor + speedRoll * (maxFactor - minFactor);
     
-    return baseSpeed * randomFactor * difficultySpeedMultiplier;
+    return baseSpeed * randomFactor * difficultySpeedMultiplier * waveSpeedMultiplier;
 }
 
 /**
@@ -1356,9 +1530,12 @@ function getRandomizedSpeed(objectType) {
  */
 function getWeightedRandomObject() {
     const weightMultipliers = getSelectedDifficultyConfig().objectWeightMultipliers || {};
+    const waveWeightMultipliers = getActiveEventWave()?.objectWeightMultipliers || {};
 
     const adjustedEntries = Object.entries(SPAWN_WEIGHTS).map(([type, weight]) => {
-        const multiplier = weightMultipliers[type] ?? 1;
+        const difficultyMultiplier = weightMultipliers[type] ?? 1;
+        const waveMultiplier = waveWeightMultipliers[type] ?? 1;
+        const multiplier = difficultyMultiplier * waveMultiplier;
         const adjustedWeight = Math.max(0, weight * multiplier);
         return [type, adjustedWeight];
     });
@@ -1484,22 +1661,23 @@ function getHitbox(obj) {
  */
 function handleCollision(fallingObj) {
     const multiplier = getMultiplier(); // Get current multiplier before combo increases
+    const waveScoreMultiplier = getWaveScoreMultiplierForType(fallingObj.type);
     const centerX = fallingObj.x + fallingObj.width / 2;
     const centerY = fallingObj.y + fallingObj.height / 2;
     
     switch (fallingObj.type) {
         case OBJECT_TYPES.WATER_DROP:
-            score += 10 * multiplier;
+            score += Math.round(10 * multiplier * waveScoreMultiplier);
             combo++;
-            addFloatingText(`+${10 * multiplier}`, centerX, centerY, '#0077ff');
+            addFloatingText(`+${Math.round(10 * multiplier * waveScoreMultiplier)}`, centerX, centerY, '#0077ff');
             triggerPlayerCatchEffect();
             playPickupSfx();
             break;
             
         case OBJECT_TYPES.GOLD_WATER_DROP:
-            score += 50 * multiplier;
+            score += Math.round(50 * multiplier * waveScoreMultiplier);
             combo += 3;
-            addFloatingText(`+${50 * multiplier}`, centerX, centerY, '#d4a017');
+            addFloatingText(`+${Math.round(50 * multiplier * waveScoreMultiplier)}`, centerX, centerY, '#d4a017');
             triggerPlayerCatchEffect();
             playPickupSfx();
             break;
@@ -2048,7 +2226,17 @@ function getStatsPanelLayout() {
     const panelWidth = isMobileDevice ? 246 : 320;
     const rowHeight = isMobileDevice ? 27 : 32;
     const headerHeight = isMobileDevice ? 32 : 36;
-    const rowCount = forcefieldTimer > 0 ? 7 : 6;
+    const activeWave = getActiveEventWave();
+    let rowCount = 6;
+
+    if (forcefieldTimer > 0) {
+        rowCount++;
+    }
+
+    if (activeWave) {
+        rowCount++;
+    }
+
     const panelHeight = headerHeight + rowCount * rowHeight + 18;
     const panelX = canvas.width - padding - panelWidth;
     const mobileBottomReserve = isMobileDevice ? (MOBILE_CONTROLS.buttonSize + 42) : 0;
@@ -2096,6 +2284,16 @@ function drawUI() {
         });
     }
 
+    const activeWave = getActiveEventWave();
+    if (activeWave) {
+        const secondsLeft = (activeEventWaveFramesLeft / FRAMES_PER_SECOND).toFixed(1);
+        statRows.push({
+            label: activeWave.label,
+            value: `${secondsLeft}s`,
+            color: activeWave.announceColor || VISUAL_THEME.accent
+        });
+    }
+
     const contentLeft = layout.panelX + 14;
     const contentRight = layout.panelX + layout.panelWidth - 14;
 
@@ -2138,6 +2336,46 @@ function drawUI() {
         ctx.textAlign = 'right';
         ctx.fillText(row.value, contentRight, rowCenterY);
     }
+}
+
+function drawEventWaveAnnouncement() {
+    if (eventWaveAnnouncementTimer <= 0 || !eventWaveAnnouncementText || !activeEventWave) {
+        return;
+    }
+
+    const elapsedFrames = EVENT_WAVE_ANNOUNCEMENT_FRAMES - eventWaveAnnouncementTimer;
+    const fadeInFrames = 18;
+    const fadeOutFrames = 30;
+    let alpha = 1;
+
+    if (elapsedFrames < fadeInFrames) {
+        alpha = elapsedFrames / fadeInFrames;
+    } else if (eventWaveAnnouncementTimer < fadeOutFrames) {
+        alpha = eventWaveAnnouncementTimer / fadeOutFrames;
+    }
+
+    const panelWidth = isMobileDevice ? Math.min(320, canvas.width - 24) : 420;
+    const panelHeight = isMobileDevice ? 52 : 60;
+    const panelX = canvas.width / 2 - panelWidth / 2;
+    const panelY = isMobileDevice ? 70 : 78;
+
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+    drawRoundedRectPath(panelX, panelY, panelWidth, panelHeight, 12);
+    ctx.fillStyle = 'rgba(13, 35, 51, 0.78)';
+    ctx.fill();
+
+    drawRoundedRectPath(panelX, panelY, panelWidth, panelHeight, 12);
+    ctx.strokeStyle = activeEventWave.announceColor || VISUAL_THEME.accent;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    ctx.fillStyle = activeEventWave.announceColor || VISUAL_THEME.accent;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = isMobileDevice ? brandFont('bold 22px') : brandFont('bold 30px');
+    ctx.fillText(eventWaveAnnouncementText, canvas.width / 2, panelY + panelHeight / 2 + 1);
+    ctx.restore();
 }
 
 /**
@@ -2281,6 +2519,9 @@ function drawPlaying() {
 
     // Draw floating score/life text effects
     drawFloatingTexts();
+
+    // Draw wave announcement banner when a wave starts
+    drawEventWaveAnnouncement();
 
     // Draw stamina bar
     drawStaminaBar();
@@ -2573,6 +2814,7 @@ function resetGameToStart() {
     screenShakeTimer = 0;
     forcefieldTimer = 0;
     heartRegenTimer = 0;
+    resetEventWaveCycle();
 
     // Reset movement key state
     movementKeys.left = false;
@@ -2663,6 +2905,7 @@ function initializeGame() {
     screenShakeTimer = 0;
     forcefieldTimer = 0;
     heartRegenTimer = 0;
+    resetEventWaveCycle();
 
     // Reset movement key state
     movementKeys.left = false;
